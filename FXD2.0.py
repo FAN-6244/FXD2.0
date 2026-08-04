@@ -6,7 +6,12 @@ FXD3.0 - 水质净化厂智能预警与调控决策系统 v3.0
 四种输入模式 · 永久记忆(Supabase) · 时序决策 · 异常诊断
 
 预测目标：去除率(%) = (进水浓度 - 出水浓度) / 进水浓度 × 100%
-记忆长度：COD=46h, NH3-N=45h, TP=46h, SS=41h, TN=45h（XGBoost-SHAP分析）
+⭐ 系统记忆长度（SML）【论文结论 v7.0】：
+   NH3-N = 1h (XGBoost, R²=0.8961)
+   TP    = 1h (RandomForest, R²=0.9011)
+   TN    = 9h (TreeConsensus, R²=0.5312)
+   COD   = 不适用 (XGBoost, R²=0.4545, 去除冗余)
+   SS    = 不适用 (XGBoost, R²=0.1976, 物理沉淀主导)
 """
 
 import streamlit as st
@@ -158,9 +163,11 @@ st.markdown("""
     .channel-fast .ch-name { color: #27AE60; }
     .channel-slow .ch-name { color: #F39C12; }
     .channel-special .ch-name { color: #E74C3C; }
+    .channel-na .ch-name { color: #95A5A6; }
     .channel-fast { border-top-color: #27AE60; }
     .channel-slow { border-top-color: #F39C12; }
     .channel-special { border-top-color: #E74C3C; }
+    .channel-na { border-top-color: #95A5A6; }
     .timeline-step {
         display: flex;
         align-items: center;
@@ -211,39 +218,39 @@ DESIGN_LIMITS = {
 }
 
 # ==========================================
-# 记忆长度（去除率模型 XGBoost-SHAP 分析结果）
-# SML: COD=46h, NH3-N=45h, TP=46h, SS=41h, TN=45h
+# ⭐ 系统记忆长度（论文结论 v7.0）
+# NH3-N=1h, TP=1h, TN=9h, COD=不适用, SS=不适用
 # ==========================================
 MEMORY = {
-    'COD':   {'hours': 46, 'channel': '慢速', 'freq': '12-24h', 'description': '有机物降解，受泥龄与负荷影响'},
-    'NH3-N': {'hours': 45, 'channel': '中速', 'freq': '8-12h',  'description': '硝化反应，DO敏感，碳源依赖'},
-    'TP':    {'hours': 46, 'channel': '慢速', 'freq': '12-24h', 'description': '化学除磷+生物除磷耦合'},
-    'TN':    {'hours': 45, 'channel': '中速', 'freq': '8-12h',  'description': '反硝化，碳源投加延迟'},
-    'SS':    {'hours': 41, 'channel': '快速', 'freq': '3-4h',   'description': '物理沉淀，受水力负荷直接影响'}
+    'COD':   {'hours': None, 'channel': '不适用', 'freq': 'N/A', 'description': '去除率几乎恒定（R²=0.45），无显著记忆效应'},
+    'NH3-N': {'hours': 1, 'channel': '极快', 'freq': '<2h', 'description': '硝化反应，DO敏感，响应极快（XGBoost R²=0.896）'},
+    'TP':    {'hours': 1, 'channel': '极快', 'freq': '<2h', 'description': '化学除磷(PAC)瞬时反应，响应极快（RF R²=0.901）'},
+    'TN':    {'hours': 9, 'channel': '中速', 'freq': '6-12h', 'description': '反硝化过程，碳源投加延迟（TreeConsensus R²=0.531）'},
+    'SS':    {'hours': None, 'channel': '不适用', 'freq': 'N/A', 'description': '物理沉淀主导（R²=0.198），建议实时阈值报警'}
 }
 
-# 三通道分组
+# 三通道分组（按论文结论重组）
 CHANNELS = {
     'fast': {
-        'name': '⚡ 快速通道',
+        'name': '⚡ 极快通道 (1h)',
         'color': '#27AE60',
-        'indicators': ['SS'],
-        'desc': 'SS (41h) | 更新 3-4h',
-        'consensus': '⚠️ 模型R²偏低，建议实时阈值报警'
+        'indicators': ['NH3-N', 'TP'],
+        'desc': 'NH₃-N (1h) · TP (1h) | 响应 <2h',
+        'consensus': '✅ 高精度模型（XGBoost/RF），适合时序预警'
     },
     'medium': {
-        'name': '🔄 中速通道',
+        'name': '🔄 中速通道 (9h)',
         'color': '#2E86AB',
-        'indicators': ['NH3-N', 'TN'],
-        'desc': 'NH₃-N (45h) · TN (45h) | 更新 8-12h',
-        'consensus': '✅ XGBoost模型可用'
+        'indicators': ['TN'],
+        'desc': 'TN (9h) | 更新 6-12h',
+        'consensus': '⚠️ 碳源管理关键指标，需结合投加策略'
     },
-    'slow': {
-        'name': '🐢 慢速通道',
-        'color': '#F39C12',
-        'indicators': ['COD', 'TP'],
-        'desc': 'COD (46h) · TP (46h) | 更新 12-24h',
-        'consensus': '✅ XGBoost模型可用'
+    'na': {
+        'name': '⚪ 非记忆通道 (N/A)',
+        'color': '#95A5A6',
+        'indicators': ['COD', 'SS'],
+        'desc': 'COD/SS 无显著记忆 | R²偏低',
+        'consensus': '🔴 建议使用实时阈值报警替代时序预测'
     }
 }
 
@@ -1196,7 +1203,7 @@ if input_data is not None:
             else:
                 real_removal[ind] = 0
 
-        # ===== 实时驯化：每次预测后立即微调所有指标 =====
+        # ⭐ 实时驯化：每次预测后立即微调所有指标（取消5次限制）
         for ind in ['COD', 'NH3-N', 'TP', 'TN', 'SS']:
             calibrate_model(ind, input_data, real_removal[ind])
         # 保存到Supabase（可选）
@@ -1299,9 +1306,7 @@ if input_data is not None:
                 </div>
                 """, unsafe_allow_html=True)
 
-    # ================================================================
-    # 注意：此处删除了运行参数指标卡（PAC、碳源、MLSS、DO、平均去除率）
-    # ================================================================
+    # ⭐ 已删除：运行参数指标卡（PAC、碳源、MLSS、DO、平均去除率）
 
     # ================================================================
     # 2. 趋势图（近24小时）
@@ -1373,17 +1378,17 @@ if input_data is not None:
         st.info("📭 数据收集中... 请等待更多数据点（至少2个时间点）")
 
     # ================================================================
-    # 3. 记忆长度与分频调控
+    # 3. ⭐ 记忆长度与分频调控（按论文结论：NH3-N=1h, TP=1h, TN=9h, COD/SS=N/A）
     # ================================================================
-    st.markdown('<div class="section-header">🧠 记忆长度与分频调控策略</div>', unsafe_allow_html=True)
-    st.caption("💡 不同污染物响应速度不同，分通道制定调控策略。基于XGBoost-SHAP去除率模型分析。")
+    st.markdown('<div class="section-header">🧠 系统记忆长度（SML）与分频调控策略</div>', unsafe_allow_html=True)
+    st.caption("💡 基于去除率模型 XGBoost-SHAP 分析（论文结论 v7.0）：NH₃-N=1h · TP=1h · TN=9h · COD/SS=不适用")
 
     col_ch1, col_ch2, col_ch3 = st.columns(3)
     with col_ch1:
         st.markdown(f"""
         <div class="channel-item channel-fast">
             <div class="ch-name">{CHANNELS['fast']['name']}</div>
-            <div class="ch-value" style="color:{CHANNELS['fast']['color']};">41h</div>
+            <div class="ch-value" style="color:{CHANNELS['fast']['color']};">1h</div>
             <div class="ch-desc">{CHANNELS['fast']['desc']}</div>
             <div class="ch-desc">{CHANNELS['fast']['consensus']}</div>
         </div>
@@ -1392,23 +1397,23 @@ if input_data is not None:
         st.markdown(f"""
         <div class="channel-item channel-slow">
             <div class="ch-name">{CHANNELS['medium']['name']}</div>
-            <div class="ch-value" style="color:{CHANNELS['medium']['color']};">45h</div>
+            <div class="ch-value" style="color:{CHANNELS['medium']['color']};">9h</div>
             <div class="ch-desc">{CHANNELS['medium']['desc']}</div>
             <div class="ch-desc">{CHANNELS['medium']['consensus']}</div>
         </div>
         """, unsafe_allow_html=True)
     with col_ch3:
         st.markdown(f"""
-        <div class="channel-item channel-special">
-            <div class="ch-name">{CHANNELS['slow']['name']}</div>
-            <div class="ch-value" style="color:{CHANNELS['slow']['color']};">46h</div>
-            <div class="ch-desc">{CHANNELS['slow']['desc']}</div>
-            <div class="ch-desc">{CHANNELS['slow']['consensus']}</div>
+        <div class="channel-item channel-na">
+            <div class="ch-name">{CHANNELS['na']['name']}</div>
+            <div class="ch-value" style="color:{CHANNELS['na']['color']};">N/A</div>
+            <div class="ch-desc">{CHANNELS['na']['desc']}</div>
+            <div class="ch-desc">{CHANNELS['na']['consensus']}</div>
         </div>
         """, unsafe_allow_html=True)
 
     # ================================================================
-    # 4. 时序决策建议
+    # 4. 时序决策建议（处理 N/A 情况）
     # ================================================================
     st.markdown('<div class="section-header">⏱️ 时序决策建议（具体操作）</div>', unsafe_allow_html=True)
     indicator_select = st.selectbox("选择指标", ['COD', 'NH3-N', 'TP', 'TN', 'SS'])
@@ -1416,7 +1421,9 @@ if input_data is not None:
     current_val = outlet_display.get(indicator_select, 0)
     limit = DESIGN_LIMITS[indicator_select]['value']
 
-    if mem:
+    # 判断是否有记忆效应
+    if mem is not None and mem > 0:
+        # 有记忆效应：生成时序步骤
         if indicator_select == 'COD':
             steps = [
                 (0, "🚨 记录进水COD异常值，启动应急响应"),
@@ -1428,32 +1435,28 @@ if input_data is not None:
             ]
         elif indicator_select == 'NH3-N':
             steps = [
-                (0, "🚨 记录进水NH₃-N异常值，启动应急响应"),
-                (10, "📞 通知值班长，准备碱度调节剂"),
-                (20, "⚙️ 提高好氧段DO至3.0-3.5 mg/L"),
-                (30, "🔍 检查碱度，若<100则补充NaHCO₃"),
-                (40, "📊 评估出水NH₃-N变化趋势"),
-                (45, "✅ 确认NH₃-N稳定达标")
+                (0, "🚨 记录进水NH₃-N异常值，启动应急响应（记忆长度1h，响应极快）"),
+                (0.5, "⚙️ 立即提高好氧段DO至3.0-3.5 mg/L"),
+                (1, "📊 评估出水NH₃-N变化趋势（1h内可见效）"),
+                (2, "✅ 确认NH₃-N稳定达标，逐步回调")
             ]
         elif indicator_select == 'TP':
             steps = [
-                (0, "🚨 记录进水TP异常值，启动应急响应"),
-                (10, "📞 通知值班长，确认PAC储备"),
-                (20, "⚙️ 增加PAC投加量30%"),
-                (30, "🔍 检查pH，若<6.5则投加碱调节"),
-                (40, "📊 评估出水TP变化趋势"),
-                (46, "✅ 确认TP稳定达标，逐步回调")
+                (0, "🚨 记录进水TP异常值，启动应急响应（记忆长度1h，PAC瞬时反应）"),
+                (0.5, "⚙️ 立即增加PAC投加量30-40%"),
+                (1, "📊 评估出水TP变化趋势（1h内可见效）"),
+                (2, "✅ 确认TP稳定达标，逐步回调")
             ]
         elif indicator_select == 'TN':
             steps = [
-                (0, "🚨 记录进水TN异常值，启动应急响应"),
-                (10, "📞 通知值班长，确认碳源储备"),
-                (20, "⚙️ 增加碳源投加量25%"),
-                (30, "🔍 检查内外回流比，调整至合理范围"),
-                (40, "📊 评估出水TN变化趋势"),
-                (45, "✅ 确认TN稳定达标")
+                (0, "🚨 记录进水TN异常值，启动应急响应（记忆长度9h，碳源延迟）"),
+                (2, "📞 通知值班长，确认碳源储备"),
+                (4, "⚙️ 增加碳源投加量25-30%，检查内回流比"),
+                (6, "🔍 检查缺氧段DO（<0.5mg/L）及搅拌器"),
+                (9, "📊 评估出水TN变化趋势（9h达到峰值响应）"),
+                (12, "✅ 确认TN稳定达标，逐步回调碳源")
             ]
-        else:  # SS
+        else:  # SS（理论上SS为N/A，但以防万一）
             steps = [
                 (0, "🚨 SS超标，启动应急响应"),
                 (5, "📞 检查二沉池刮泥机"),
@@ -1474,6 +1477,19 @@ if input_data is not None:
             </div>
             """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        # ⭐ 无记忆效应（COD / SS）：切换为实时阈值报警建议
+        st.info(f"⚠️ **{indicator_select} 无显著记忆效应**（R²偏低，去除率几乎恒定/物理沉淀主导）")
+        st.markdown(f"""
+        <div style="background:#FFF3E0;border-radius:8px;padding:12px 16px;border-left:4px solid #F39C12;">
+            <b>💡 推荐策略：实时阈值报警 + 即时干预</b><br>
+            • 当前 {indicator_select} 出水值为 <b>{current_val:.2f} mg/L</b>（限值 {limit} mg/L）<br>
+            • 去除率 {removal_rates.get(indicator_select, 0)*100:.1f}%<br>
+            • 建议每 <b>1-2 小时</b> 取样检测一次<br>
+            • 超标时立即触发声光报警并推送至值班手机<br>
+            • 不依赖历史时序预测，以实测数据驱动调控
+        </div>
+        """, unsafe_allow_html=True)
 
     # ================================================================
     # 5. 异常诊断与工艺优化（已细化）
@@ -1521,10 +1537,12 @@ if input_data is not None:
         </div>
         """, unsafe_allow_html=True)
     with col_stats3:
+        # ⭐ 更新为论文结论
         st.markdown("""
         <div class="stat-card">
-            <div class="stat-label">🧠 记忆长度（去除率模型）</div>
-            <div class="stat-value">COD 46h · NH₃-N 45h · TP 46h · SS 41h</div>
+            <div class="stat-label">🧠 系统记忆长度（SML）</div>
+            <div class="stat-value">NH₃-N=1h · TP=1h · TN=9h</div>
+            <div class="stat-sub">COD/SS = 不适用（低R²）</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1540,15 +1558,15 @@ else:
     5. 查看时序决策建议和细化异常诊断
     """)
     st.markdown("---")
-    st.markdown("#### 🧠 系统记忆长度（XGBoost-SHAP 去除率模型）")
+    st.markdown("#### 🧠 系统记忆长度（SML）- 论文结论 v7.0")
     st.markdown("""
-    | 指标 | 记忆长度 | 通道 | 工艺解释 |
-    | :--- | :---: | :---: | :--- |
-    | **COD** | **46 小时** | 慢速 | 有机物降解，受泥龄与负荷影响 |
-    | **NH₃-N** | **45 小时** | 中速 | 硝化反应，DO敏感，碳源依赖 |
-    | **TP** | **46 小时** | 慢速 | 化学除磷+生物除磷耦合 |
-    | **TN** | **45 小时** | 中速 | 反硝化，碳源投加延迟 |
-    | **SS** | **41 小时** | 快速 | 物理沉淀，受水力负荷直接影响 |
+    | 指标 | 记忆长度 | 最佳模型 | R² | 工艺解释 |
+    | :--- | :---: | :---: | :---: | :--- |
+    | **NH₃-N** | **1 小时** | XGBoost | 0.896 | 硝化反应，DO敏感，响应极快 |
+    | **TP** | **1 小时** | RandomForest | 0.901 | 化学除磷(PAC)瞬时反应 |
+    | **TN** | **9 小时** | TreeConsensus | 0.531 | 反硝化，碳源投加延迟 |
+    | **COD** | **不适用** | XGBoost | 0.455 | 去除率几乎恒定（去除冗余） |
+    | **SS** | **不适用** | XGBoost | 0.198 | 物理沉淀主导（建议阈值报警） |
     """)
     st.caption(f"📌 基于去除率模型 · XGBoost-SHAP 分析 · {'模型已加载' if HAS_MODEL else '使用经验值（请运行模型训练脚本生成model_cache）'}")
 
