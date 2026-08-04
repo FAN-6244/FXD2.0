@@ -1,6 +1,6 @@
 """
 FXD2.0.py - 龙华水质净化厂智能预警系统 v7.0
-完整复刻旧版界面：布局始终显示，预测只更新数据
+按用户反馈精简并强化诊断
 """
 
 import streamlit as st
@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 st.set_page_config(
-    page_title="水质净化厂智能预警与调控决策系统 v7.0",
+    page_title="水质净化厂智能预警与调控决策系统",
     page_icon="🏭",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -36,7 +36,7 @@ SUPABASE_KEY = "sb_publishable_m0hz9Rv8NB_ziC5xKCltMg_Ij5Od60Q"
 supabase_client = supabase.create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==========================================
-# CSS样式（完全保留旧版）
+# CSS样式（完整复刻旧版）
 # ==========================================
 st.markdown("""
 <style>
@@ -159,7 +159,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 设计标准和记忆长度（更新为最新结果）
+# 设计标准和记忆长度
 # ==========================================
 DESIGN_LIMITS = {
     'COD': {'value': 30, 'unit': 'mg/L'},
@@ -236,8 +236,11 @@ if 'has_prediction' not in st.session_state:
     st.session_state.has_prediction = False
 if 'pred_result' not in st.session_state:
     st.session_state.pred_result = None
+if 'current_inlet' not in st.session_state:
+    st.session_state.current_inlet = {'COD': 200, 'NH3-N': 20, 'TP': 3.0, 'TN': 30, 'SS': 150, '流量': 10000}
+    st.session_state.current_params = {'PAC': 30, '碳源': 50, 'MLSS': 4000, 'DO': 2.0}
 
-st.markdown('<div class="main-title">🏭 水质净化厂智能预警与调控决策系统 v7.0</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-title">🏭 水质净化厂智能预警与调控决策系统</div>', unsafe_allow_html=True)
 
 # ==========================================
 # 状态栏
@@ -263,10 +266,9 @@ with col_s3:
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 【核心修改】预测函数（去除率 → 反推出水浓度）
+# 预测函数
 # ==========================================
 def build_feature_vector_for_prediction(nh3, do, mlss, pac, carbon, flow, feature_cols):
-    """构造特征向量（匹配训练时的特征）"""
     vec = np.zeros((1, len(feature_cols)))
     for i, col in enumerate(feature_cols):
         if 'NH3-N_detrend_lag1' in col:
@@ -294,7 +296,6 @@ def build_feature_vector_for_prediction(nh3, do, mlss, pac, carbon, flow, featur
     return vec
 
 def predict_removal_effluent(input_data):
-    """预测去除率，反推出水浓度"""
     if input_data is None:
         return None
     try:
@@ -430,66 +431,227 @@ def get_saved_count():
         return 0
 
 # ==========================================
-# 诊断函数（完全保留旧版）
+# 诊断函数（强化版，基于进水异常给出详细分析）
 # ==========================================
-def diagnose_system(inlet, outlet, pac, carbon, mlss, do):
+def diagnose_inlet(inlet):
+    """根据进水水质生成诊断"""
     diagnoses = []
-    # 进水COD
-    if inlet.get('COD', 0) > 500:
-        diagnoses.append({'level': 'critical', 'indicator': '进水COD', 'current': f"{inlet['COD']:.0f} mg/L", 'title': '🚨 进水COD严重超标（>500 mg/L）', 'reasons': ['工业废水偷排', '管网沉积物冲刷', '污泥厌氧消化液回流'], 'actions': ['增加碳源投加量30-40%', '提高好氧段DO至3.0-3.5 mg/L', '降低进水量15-20%']})
-    elif inlet.get('COD', 0) > 400:
-        diagnoses.append({'level': 'warning', 'indicator': '进水COD', 'current': f"{inlet['COD']:.0f} mg/L", 'title': '⚠️ 进水COD偏高（400-500 mg/L）', 'reasons': ['工业废水间歇性排放冲击', '管网沉积物释放'], 'actions': ['增加碳源投加量20%', '提高DO至2.5-3.0 mg/L']})
-    # 进水NH3-N
-    if inlet.get('NH3-N', 0) > 45:
-        diagnoses.append({'level': 'critical', 'indicator': '进水NH₃-N', 'current': f"{inlet['NH3-N']:.1f} mg/L", 'title': '🚨 进水NH₃-N严重超标（>45 mg/L）', 'reasons': ['工业废水偷排高浓度氨氮', '污泥消化液回流'], 'actions': ['提高DO至3.5-4.0 mg/L', '补充NaHCO₃ 80-100mg/L', '延长污泥龄']})
-    elif inlet.get('NH3-N', 0) > 35:
-        diagnoses.append({'level': 'warning', 'indicator': '进水NH₃-N', 'current': f"{inlet['NH3-N']:.1f} mg/L", 'title': '⚠️ 进水NH₃-N偏高（35-45 mg/L）', 'reasons': ['上游氨氮浓度升高', '硝化菌活性受抑制'], 'actions': ['提高DO至3.0-3.5 mg/L', '补充碱度50-80 mg/L']})
-    # 进水TP
-    if inlet.get('TP', 0) > 7.0:
-        diagnoses.append({'level': 'critical', 'indicator': '进水TP', 'current': f"{inlet['TP']:.2f} mg/L", 'title': '🚨 进水TP严重超标（>7.0 mg/L）', 'reasons': ['工业废水偷排高浓度磷废水', '污泥厌氧释磷'], 'actions': ['增加PAC投加量40-50%', '检查pH 6.5-7.5', '增加排泥']})
-    elif inlet.get('TP', 0) > 5.0:
-        diagnoses.append({'level': 'warning', 'indicator': '进水TP', 'current': f"{inlet['TP']:.2f} mg/L", 'title': '⚠️ 进水TP偏高（5.0-7.0 mg/L）', 'reasons': ['上游含磷废水浓度波动', 'PAC投加量相对不足'], 'actions': ['增加PAC投加量20-30%', '检查pH并调节']})
-    # 进水TN
-    if inlet.get('TN', 0) > 50:
-        diagnoses.append({'level': 'warning', 'indicator': '进水TN', 'current': f"{inlet.get('TN', 0):.1f} mg/L", 'title': '⚠️ 进水TN偏高（>50 mg/L）', 'reasons': ['上游氨氮/有机氮升高', '反硝化碳源不足'], 'actions': ['增加碳源投加量', '检查缺氧段DO']})
-    # 进水SS
-    if inlet.get('SS', 0) > 350:
-        diagnoses.append({'level': 'warning', 'indicator': '进水SS', 'current': f"{inlet['SS']:.0f} mg/L", 'title': '⚠️ 进水SS严重偏高（>350 mg/L）', 'reasons': ['管网冲刷', '初沉池运行异常'], 'actions': ['增加初沉池排泥频率', '投加PAM絮凝剂']})
-    # 出水COD
-    if outlet.get('COD', 0) > DESIGN_LIMITS['COD']['value']:
-        diagnoses.append({'level': 'critical' if outlet['COD'] > 45 else 'warning', 'indicator': '出水COD', 'current': f"{outlet['COD']:.1f} mg/L", 'title': f"{'🚨' if outlet['COD'] > 45 else '⚠️'} 出水COD超标", 'reasons': [f'进水COD负荷过高（{inlet["COD"]:.0f}）', f'DO不足（{do:.1f}）', '污泥老化'], 'actions': [f'增加碳源{int(carbon)}→{int(carbon*1.25)}', f'提高DO至2.5-3.0']})
-    # 出水NH3-N
-    if outlet.get('NH3-N', 0) > DESIGN_LIMITS['NH3-N']['value']:
-        diagnoses.append({'level': 'critical' if outlet['NH3-N'] > 3.0 else 'warning', 'indicator': '出水NH₃-N', 'current': f"{outlet['NH3-N']:.3f} mg/L", 'title': f"{'🚨' if outlet['NH3-N'] > 3.0 else '⚠️'} 出水NH₃-N超标", 'reasons': [f'DO不足（{do:.1f}）', '碱度不足', 'SRT太短'], 'actions': ['提高DO至3.0-3.5', '补充NaHCO₃ 50-80mg/L', '延长SRT至15天以上']})
-    # 出水TP
-    if outlet.get('TP', 0) > DESIGN_LIMITS['TP']['value']:
-        diagnoses.append({'level': 'critical' if outlet['TP'] > 0.6 else 'warning', 'indicator': '出水TP', 'current': f"{outlet['TP']:.3f} mg/L", 'title': f"{'🚨' if outlet['TP'] > 0.6 else '⚠️'} 出水TP超标", 'reasons': [f'PAC不足（{pac:.0f}）', 'pH不适宜', '磷释放'], 'actions': [f'增加PAC {pac}→{int(pac*1.4)}', '调整投加点', '增加排泥']})
-    # 出水TN
-    if outlet.get('TN', 0) > DESIGN_LIMITS['TN']['value']:
-        diagnoses.append({'level': 'warning', 'indicator': '出水TN', 'current': f"{outlet.get('TN', 0):.1f} mg/L", 'title': '⚠️ 出水TN超标', 'reasons': ['碳源不足', '缺氧段DO过高', '回流量不足'], 'actions': ['增加碳源投加量', '降低缺氧段DO至0.5以下', '增加内回流量']})
-    # 出水SS
-    if outlet.get('SS', 0) > DESIGN_LIMITS['SS']['value']:
-        diagnoses.append({'level': 'warning', 'indicator': '出水SS', 'current': f"{outlet['SS']:.1f} mg/L", 'title': '⚠️ 出水SS超标', 'reasons': ['表面负荷过高', 'SVI升高', '排泥不足'], 'actions': ['增加排泥20%', '投加PAM', '降低进水量10-15%']})
-    # DO
+    cod = inlet.get('COD', 0)
+    nh3 = inlet.get('NH3-N', 0)
+    tp = inlet.get('TP', 0)
+    tn = inlet.get('TN', 0)
+    ss = inlet.get('SS', 0)
+    
+    if cod > 500:
+        diagnoses.append({
+            'level': 'critical',
+            'indicator': '进水COD',
+            'current': f"{cod:.0f} mg/L",
+            'title': '🚨 进水COD严重超标（>500 mg/L）',
+            'reasons': ['工业废水偷排', '管网沉积物冲刷', '污泥厌氧消化液回流'],
+            'actions': ['增加碳源投加量30-40%', '提高好氧段DO至3.0-3.5 mg/L', '降低进水量15-20%']
+        })
+    elif cod > 400:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '进水COD',
+            'current': f"{cod:.0f} mg/L",
+            'title': '⚠️ 进水COD偏高（400-500 mg/L）',
+            'reasons': ['工业废水间歇性排放冲击', '管网沉积物释放'],
+            'actions': ['增加碳源投加量20%', '提高DO至2.5-3.0 mg/L']
+        })
+    elif cod < 100 and cod > 0:
+        diagnoses.append({
+            'level': 'info',
+            'indicator': '进水COD',
+            'current': f"{cod:.0f} mg/L",
+            'title': 'ℹ️ 进水COD偏低（<100 mg/L）',
+            'reasons': ['雨水稀释', '上游截流'],
+            'actions': ['减少碳源投加量20-30%', '适当降低曝气量']
+        })
+    if nh3 > 45:
+        diagnoses.append({
+            'level': 'critical',
+            'indicator': '进水NH₃-N',
+            'current': f"{nh3:.1f} mg/L",
+            'title': '🚨 进水NH₃-N严重超标（>45 mg/L）',
+            'reasons': ['工业废水偷排高浓度氨氮', '污泥消化液回流'],
+            'actions': ['提高DO至3.5-4.0 mg/L', '补充NaHCO₃ 80-100mg/L', '延长污泥龄']
+        })
+    elif nh3 > 35:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '进水NH₃-N',
+            'current': f"{nh3:.1f} mg/L",
+            'title': '⚠️ 进水NH₃-N偏高（35-45 mg/L）',
+            'reasons': ['上游氨氮浓度升高', '硝化菌活性受抑制'],
+            'actions': ['提高DO至3.0-3.5 mg/L', '补充碱度50-80 mg/L']
+        })
+    if tp > 7.0:
+        diagnoses.append({
+            'level': 'critical',
+            'indicator': '进水TP',
+            'current': f"{tp:.2f} mg/L",
+            'title': '🚨 进水TP严重超标（>7.0 mg/L）',
+            'reasons': ['工业废水偷排高浓度磷废水', '污泥厌氧释磷'],
+            'actions': ['增加PAC投加量40-50%', '检查pH 6.5-7.5', '增加排泥']
+        })
+    elif tp > 5.0:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '进水TP',
+            'current': f"{tp:.2f} mg/L",
+            'title': '⚠️ 进水TP偏高（5.0-7.0 mg/L）',
+            'reasons': ['上游含磷废水浓度波动', 'PAC投加量相对不足'],
+            'actions': ['增加PAC投加量20-30%', '检查pH并调节']
+        })
+    if tn > 50:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '进水TN',
+            'current': f"{tn:.1f} mg/L",
+            'title': '⚠️ 进水TN偏高（>50 mg/L）',
+            'reasons': ['上游氨氮/有机氮升高', '反硝化碳源不足'],
+            'actions': ['增加碳源投加量', '检查缺氧段DO']
+        })
+    if ss > 350:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '进水SS',
+            'current': f"{ss:.0f} mg/L",
+            'title': '⚠️ 进水SS严重偏高（>350 mg/L）',
+            'reasons': ['管网冲刷', '初沉池运行异常'],
+            'actions': ['增加初沉池排泥频率', '投加PAM絮凝剂']
+        })
+    return diagnoses
+
+def diagnose_outlet(outlet, inlet, pac, carbon, mlss, do):
+    """结合出水异常生成诊断"""
+    diagnoses = []
+    cod_out = outlet.get('COD', 0)
+    nh3_out = outlet.get('NH3-N', 0)
+    tp_out = outlet.get('TP', 0)
+    tn_out = outlet.get('TN', 0)
+    ss_out = outlet.get('SS', 0)
+    
+    if cod_out > DESIGN_LIMITS['COD']['value']:
+        diagnoses.append({
+            'level': 'critical' if cod_out > 45 else 'warning',
+            'indicator': '出水COD',
+            'current': f"{cod_out:.1f} mg/L",
+            'title': f"{'🚨' if cod_out > 45 else '⚠️'} 出水COD超标",
+            'reasons': [f'进水COD负荷过高（{inlet["COD"]:.0f}）', f'DO不足（{do:.1f}）', '污泥老化'],
+            'actions': [f'增加碳源{int(carbon)}→{int(carbon*1.25)}', f'提高DO至2.5-3.0']
+        })
+    if nh3_out > DESIGN_LIMITS['NH3-N']['value']:
+        diagnoses.append({
+            'level': 'critical' if nh3_out > 3.0 else 'warning',
+            'indicator': '出水NH₃-N',
+            'current': f"{nh3_out:.3f} mg/L",
+            'title': f"{'🚨' if nh3_out > 3.0 else '⚠️'} 出水NH₃-N超标",
+            'reasons': [f'DO不足（{do:.1f}）', '碱度不足', 'SRT太短'],
+            'actions': ['提高DO至3.0-3.5', '补充NaHCO₃ 50-80mg/L', '延长SRT至15天以上']
+        })
+    if tp_out > DESIGN_LIMITS['TP']['value']:
+        diagnoses.append({
+            'level': 'critical' if tp_out > 0.6 else 'warning',
+            'indicator': '出水TP',
+            'current': f"{tp_out:.3f} mg/L",
+            'title': f"{'🚨' if tp_out > 0.6 else '⚠️'} 出水TP超标",
+            'reasons': [f'PAC不足（{pac:.0f}）', 'pH不适宜', '磷释放'],
+            'actions': [f'增加PAC {pac}→{int(pac*1.4)}', '调整投加点', '增加排泥']
+        })
+    if tn_out > DESIGN_LIMITS['TN']['value']:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '出水TN',
+            'current': f"{tn_out:.1f} mg/L",
+            'title': '⚠️ 出水TN超标',
+            'reasons': ['碳源不足', '缺氧段DO过高', '回流量不足'],
+            'actions': ['增加碳源投加量', '降低缺氧段DO至0.5以下', '增加内回流量']
+        })
+    if ss_out > DESIGN_LIMITS['SS']['value']:
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '出水SS',
+            'current': f"{ss_out:.1f} mg/L",
+            'title': '⚠️ 出水SS超标',
+            'reasons': ['表面负荷过高', 'SVI升高', '排泥不足'],
+            'actions': ['增加排泥20%', '投加PAM', '降低进水量10-15%']
+        })
+    # 运行参数异常
     if do < 0.8:
-        diagnoses.append({'level': 'critical', 'indicator': '溶解氧DO', 'current': f"{do:.1f} mg/L", 'title': '🚨 好氧段DO严重不足（<0.8 mg/L）', 'reasons': ['曝气设备故障', '进水负荷突增'], 'actions': ['检查曝气设备', '加大风机风量20-30%']})
+        diagnoses.append({
+            'level': 'critical',
+            'indicator': '溶解氧DO',
+            'current': f"{do:.1f} mg/L",
+            'title': '🚨 好氧段DO严重不足（<0.8 mg/L）',
+            'reasons': ['曝气设备故障', '进水负荷突增'],
+            'actions': ['检查曝气设备', '加大风机风量20-30%']
+        })
     elif do < 1.5:
-        diagnoses.append({'level': 'warning', 'indicator': '溶解氧DO', 'current': f"{do:.1f} mg/L", 'title': '⚠️ 好氧段DO偏低（<1.5 mg/L）', 'reasons': ['曝气量不足', '进水负荷增加'], 'actions': ['增加曝气量10-20%', '监测DO变化趋势']})
-    # MLSS
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '溶解氧DO',
+            'current': f"{do:.1f} mg/L",
+            'title': '⚠️ 好氧段DO偏低（<1.5 mg/L）',
+            'reasons': ['曝气量不足', '进水负荷增加'],
+            'actions': ['增加曝气量10-20%', '监测DO变化趋势']
+        })
     if mlss < 2500:
-        diagnoses.append({'level': 'warning', 'indicator': '污泥浓度MLSS', 'current': f"{mlss:.0f} mg/L", 'title': '⚠️ 污泥浓度偏低（<2500 mg/L）', 'reasons': ['污泥流失过多', '进水负荷过低'], 'actions': ['减少排泥量', '增加污泥回流量']})
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '污泥浓度MLSS',
+            'current': f"{mlss:.0f} mg/L",
+            'title': '⚠️ 污泥浓度偏低（<2500 mg/L）',
+            'reasons': ['污泥流失过多', '进水负荷过低'],
+            'actions': ['减少排泥量', '增加污泥回流量']
+        })
     elif mlss > 6000:
-        diagnoses.append({'level': 'info', 'indicator': '污泥浓度MLSS', 'current': f"{mlss:.0f} mg/L", 'title': 'ℹ️ 污泥浓度偏高（>6000 mg/L）', 'reasons': ['排泥不足', '二沉池泥层过厚'], 'actions': ['增加排泥量', '检查二沉池泥位']})
-    # PAC
+        diagnoses.append({
+            'level': 'info',
+            'indicator': '污泥浓度MLSS',
+            'current': f"{mlss:.0f} mg/L",
+            'title': 'ℹ️ 污泥浓度偏高（>6000 mg/L）',
+            'reasons': ['排泥不足', '二沉池泥层过厚'],
+            'actions': ['增加排泥量', '检查二沉池泥位']
+        })
     if pac < 20:
-        diagnoses.append({'level': 'warning', 'indicator': 'PAC投加量', 'current': f"{pac:.0f} mg/L", 'title': '⚠️ PAC投加量偏低（<20 mg/L）', 'reasons': ['PAC储备不足', '加药泵故障'], 'actions': ['增加PAC至30-50 mg/L', '检查加药泵']})
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': 'PAC投加量',
+            'current': f"{pac:.0f} mg/L",
+            'title': '⚠️ PAC投加量偏低（<20 mg/L）',
+            'reasons': ['PAC储备不足', '加药泵故障'],
+            'actions': ['增加PAC至30-50 mg/L', '检查加药泵']
+        })
     elif pac > 80:
-        diagnoses.append({'level': 'info', 'indicator': 'PAC投加量', 'current': f"{pac:.0f} mg/L", 'title': 'ℹ️ PAC投加量偏高（>80 mg/L）', 'reasons': ['为应对高负荷临时加大'], 'actions': ['评估是否可降低', '检查出水TP是否达标']})
-    # 碳源
+        diagnoses.append({
+            'level': 'info',
+            'indicator': 'PAC投加量',
+            'current': f"{pac:.0f} mg/L",
+            'title': 'ℹ️ PAC投加量偏高（>80 mg/L）',
+            'reasons': ['为应对高负荷临时加大'],
+            'actions': ['评估是否可降低', '检查出水TP是否达标']
+        })
     if carbon < 30:
-        diagnoses.append({'level': 'warning', 'indicator': '碳源投加量', 'current': f"{carbon:.0f} mg/L", 'title': '⚠️ 碳源投加量偏低（<30 mg/L）', 'reasons': ['碳源储备不足', '反硝化碳源缺乏'], 'actions': ['增加碳源至40-60 mg/L', '检查碳源储罐液位']})
+        diagnoses.append({
+            'level': 'warning',
+            'indicator': '碳源投加量',
+            'current': f"{carbon:.0f} mg/L",
+            'title': '⚠️ 碳源投加量偏低（<30 mg/L）',
+            'reasons': ['碳源储备不足', '反硝化碳源缺乏'],
+            'actions': ['增加碳源至40-60 mg/L', '检查碳源储罐液位']
+        })
     elif carbon > 100:
-        diagnoses.append({'level': 'info', 'indicator': '碳源投加量', 'current': f"{carbon:.0f} mg/L", 'title': 'ℹ️ 碳源投加量偏高（>100 mg/L）', 'reasons': ['为应对高负荷临时加大'], 'actions': ['评估是否可逐步降低', '检查出水COD和TN']})
+        diagnoses.append({
+            'level': 'info',
+            'indicator': '碳源投加量',
+            'current': f"{carbon:.0f} mg/L",
+            'title': 'ℹ️ 碳源投加量偏高（>100 mg/L）',
+            'reasons': ['为应对高负荷临时加大'],
+            'actions': ['评估是否可逐步降低', '检查出水COD和TN']
+        })
     return diagnoses
 
 # ==========================================
@@ -529,6 +691,11 @@ if input_mode_global == "✏️ 手动输入":
     with c4:
         mlss = st.number_input("MLSS (mg/L)", min_value=0.0, value=4000.0, key="manual_mlss")
         do = st.number_input("DO (mg/L)", min_value=0.0, value=2.0, key="manual_do")
+    
+    # 保存当前输入用于诊断（即使未预测）
+    st.session_state.current_inlet = {'COD': cod_in, 'NH3-N': nh3_in, 'TP': tp_in, 'TN': tn_in, 'SS': ss_in, '流量': flow_in}
+    st.session_state.current_params = {'PAC': pac, '碳源': carbon, 'MLSS': mlss, 'DO': do}
+    
     if st.sidebar.button("🔮 预测", type="primary", use_container_width=True):
         input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
         result = predict_removal_effluent(input_data)
@@ -580,6 +747,8 @@ elif input_mode_global == "📁 文件上传":
                 carbon = row['碳源']
                 mlss = row['MLSS']
                 do = row['DO']
+                st.session_state.current_inlet = {'COD': cod_in, 'NH3-N': nh3_in, 'TP': tp_in, 'TN': tn_in, 'SS': ss_in, '流量': flow_in}
+                st.session_state.current_params = {'PAC': pac, '碳源': carbon, 'MLSS': mlss, 'DO': do}
                 input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
                 result = predict_removal_effluent(input_data)
                 if result:
@@ -613,6 +782,8 @@ elif input_mode_global == "📡 API接入":
                 carbon = data.get('碳源', 0)
                 mlss = data.get('MLSS', 0)
                 do = data.get('DO', 0)
+                st.session_state.current_inlet = {'COD': cod_in, 'NH3-N': nh3_in, 'TP': tp_in, 'TN': tn_in, 'SS': ss_in, '流量': flow_in}
+                st.session_state.current_params = {'PAC': pac, '碳源': carbon, 'MLSS': mlss, 'DO': do}
                 input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
                 result = predict_removal_effluent(input_data)
                 if result:
@@ -648,10 +819,11 @@ else:
     carbon = simulated_inlet['碳源']
     mlss = simulated_inlet['MLSS']
     do = simulated_inlet['DO']
+    st.session_state.current_inlet = {'COD': cod_in, 'NH3-N': nh3_in, 'TP': tp_in, 'TN': tn_in, 'SS': ss_in, '流量': flow_in}
+    st.session_state.current_params = {'PAC': pac, '碳源': carbon, 'MLSS': mlss, 'DO': do}
     input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
     simulated_outlet = simulate_outlet(simulated_inlet)
     
-    # 自动触发预测
     result = predict_removal_effluent(input_data)
     if result:
         st.session_state.pred_result = result
@@ -665,10 +837,9 @@ else:
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 【核心修改】主界面：始终显示布局，预测只更新数据
+# 主界面
 # ==========================================
 
-# ---- 状态更新 ----
 has_pred = st.session_state.get('has_prediction', False)
 pred_result = st.session_state.get('pred_result', None)
 
@@ -678,7 +849,6 @@ if has_pred and pred_result:
     inlet = pred_result['inlet']
     params = pred_result['params']
     
-    # 状态
     has_abnormal = False
     for key in ['COD', 'NH3-N', 'TP', 'TN', 'SS']:
         if outlet_pred.get(key, 0) > DESIGN_LIMITS.get(key, {'value': 999})['value']:
@@ -695,6 +865,7 @@ if has_pred and pred_result:
         </div>
         """, unsafe_allow_html=True)
 else:
+    # 无预测时显示等待状态，但仍可展示进水诊断
     with status_placeholder:
         st.markdown("""
         <div class="status-metric">
@@ -703,15 +874,12 @@ else:
         </div>
         """, unsafe_allow_html=True)
     # 使用默认值显示布局
-    outlet_pred = {
-        'COD': 14.0, 'NH3-N': 0.05, 'TP': 0.10, 'TN': 5.0, 'SS': 3.0
-    }
-    inlet = {'COD': 200, 'NH3-N': 20, 'TP': 3.0, 'TN': 30, 'SS': 150, '流量': 10000}
-    params = {'PAC': 30, '碳源': 50, 'MLSS': 4000, 'DO': 2.0}
+    outlet_pred = {'COD': 14.0, 'NH3-N': 0.05, 'TP': 0.10, 'TN': 5.0, 'SS': 3.0}
+    inlet = st.session_state.current_inlet
+    params = st.session_state.current_params
     removal = 0.85
-    has_pred = False
 
-# ---- 进出水水质面板（始终显示） ----
+# ---- 进出水水质面板 ----
 st.markdown('<div class="section-header">📊 进出水水质实时监测</div>', unsafe_allow_html=True)
 st.caption(f"📌 出水设计标准：COD≤{DESIGN_LIMITS['COD']['value']} | NH₃-N≤{DESIGN_LIMITS['NH3-N']['value']} | TP≤{DESIGN_LIMITS['TP']['value']} | TN≤{DESIGN_LIMITS['TN']['value']} | SS≤{DESIGN_LIMITS['SS']['value']} mg/L")
 
@@ -735,7 +903,8 @@ with col_left:
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col_right:
-    outlet_label = "预测" if has_pred else "—"
+    # 根据是否有点击预测显示不同标签
+    outlet_label = "实测" if has_pred else "—"   # 按用户要求改为"实测"
     st.markdown(f"""
     <div class="water-card-out">
         <div style="font-size:15px; font-weight:600; color:#1a5c3a; margin-bottom:6px;">
@@ -750,27 +919,95 @@ with col_right:
     cc3, cc4 = st.columns(2)
     with cc3:
         st.markdown(f"""<div class="metric-card"><div class="label">COD <span class="limit-ref">限值≤{DESIGN_LIMITS['COD']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if cod_ok else '#C0392B'}">{outlet_pred['COD']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if cod_ok else f'🔴 超标{outlet_pred["COD"]-DESIGN_LIMITS["COD"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
-        st.markdown(f"""<div class="metric-card"><div class="label">NH₃-N <span class="limit-ref">限值≤{DESIGN_LIMITS['NH3-N']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if nh3_ok else '#C0392B'}">{outlet_pred['NH3-N']:.3f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if nh3_ok else f'🔴 超标{outlet_pred["NH3-N"]-DESIGN_LIMITS["NH3-N"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">NH₃-N <span class="limit-ref">限值≤{DESIGN_LIMITS['NH3-N']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if nh3_ok else '#C0392B'}">{outlet_pred['NH3-N']:.3f} / {DESIGN_LIMITS['NH3-N']['value']} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if nh3_ok else f'🔴 超标{outlet_pred["NH3-N"]-DESIGN_LIMITS["NH3-N"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
     with cc4:
         st.markdown(f"""<div class="metric-card"><div class="label">TP <span class="limit-ref">限值≤{DESIGN_LIMITS['TP']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if tp_ok else '#C0392B'}">{outlet_pred['TP']:.3f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if tp_ok else f'🔴 超标{outlet_pred["TP"]-DESIGN_LIMITS["TP"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
         st.markdown(f"""<div class="metric-card"><div class="label">TN <span class="limit-ref">限值≤{DESIGN_LIMITS['TN']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if tn_ok else '#C0392B'}">{outlet_pred.get('TN', 0):.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if tn_ok else f'🔴 超标{outlet_pred.get("TN", 0)-DESIGN_LIMITS["TN"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
         st.markdown(f"""<div class="metric-card"><div class="label">SS <span class="limit-ref">限值≤{DESIGN_LIMITS['SS']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if ss_ok else '#C0392B'}">{outlet_pred['SS']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if ss_ok else f'🔴 超标{outlet_pred["SS"]-DESIGN_LIMITS["SS"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ---- 运行参数 ----
-st.markdown("---")
-st.markdown("#### 🟡 当前运行参数")
-col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
-with col_p1:
-    st.metric("PAC", f"{params['PAC']:.0f} mg/L")
-with col_p2:
-    st.metric("碳源", f"{params['碳源']:.0f} mg/L")
-with col_p3:
-    st.metric("MLSS", f"{params['MLSS']:.0f} mg/L")
-with col_p4:
-    st.metric("DO", f"{params['DO']:.1f} mg/L")
-with col_p5:
-    st.metric("NH₃-N去除率", f"{removal*100:.1f}%" if has_pred else "—")
+# ---- 趋势图（保留） ----
+st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
+st.caption("🟦 实线 = 实测值 | 虚线 = 预测值")
+
+recent_data = st.session_state.data_buffer.get_recent(24)
+if len(recent_data) > 1:
+    df_trend = pd.DataFrame([{
+        'timestamp': d['timestamp'],
+        'inlet_COD': d['inlet']['COD'],
+        'inlet_NH3': d['inlet']['NH3-N'],
+        'inlet_TP': d['inlet']['TP'],
+        'inlet_TN': d['inlet'].get('TN', 0),
+        'outlet_COD_real': d['outlet']['COD'] if d['outlet'] else None,
+        'outlet_COD_pred': d['pred_outlet']['COD'] if d['pred_outlet'] else None,
+        'outlet_NH3_real': d['outlet']['NH3-N'] if d['outlet'] else None,
+        'outlet_NH3_pred': d['pred_outlet']['NH3-N'] if d['pred_outlet'] else None,
+        'outlet_TP_real': d['outlet']['TP'] if d['outlet'] else None,
+        'outlet_TP_pred': d['pred_outlet']['TP'] if d['pred_outlet'] else None,
+        'outlet_TN_real': d['outlet']['TN'] if d['outlet'] else None,
+        'outlet_TN_pred': d['pred_outlet']['TN'] if d['pred_outlet'] else None,
+    } for d in recent_data])
+    
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                        subplot_titles=('COD', 'NH₃-N', 'TP', 'TN'))
+    
+    # COD
+    fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_COD'],
+                            name='进水COD', line=dict(color='#E74C3C', width=2)), row=1, col=1)
+    mask = df_trend['outlet_COD_real'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_COD_real'],
+                                name='出水COD_实测', line=dict(color='#2E86AB', width=2.5)), row=1, col=1)
+    mask = df_trend['outlet_COD_pred'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_COD_pred'],
+                                name='出水COD_预测', line=dict(color='#2E86AB', width=2, dash='dot')), row=1, col=1)
+    fig.add_hline(y=DESIGN_LIMITS['COD']['value'], line_dash="dash", line_color="red", row=1, col=1)
+    
+    # NH3-N
+    fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_NH3'],
+                            name='进水NH₃-N', line=dict(color='#F39C12', width=2)), row=2, col=1)
+    mask = df_trend['outlet_NH3_real'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_NH3_real'],
+                                name='出水NH₃-N_实测', line=dict(color='#27AE60', width=2.5)), row=2, col=1)
+    mask = df_trend['outlet_NH3_pred'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_NH3_pred'],
+                                name='出水NH₃-N_预测', line=dict(color='#27AE60', width=2, dash='dot')), row=2, col=1)
+    fig.add_hline(y=DESIGN_LIMITS['NH3-N']['value'], line_dash="dash", line_color="red", row=2, col=1)
+    
+    # TP
+    fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_TP'],
+                            name='进水TP', line=dict(color='#8E44AD', width=2)), row=3, col=1)
+    mask = df_trend['outlet_TP_real'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TP_real'],
+                                name='出水TP_实测', line=dict(color='#F39C12', width=2.5)), row=3, col=1)
+    mask = df_trend['outlet_TP_pred'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TP_pred'],
+                                name='出水TP_预测', line=dict(color='#F39C12', width=2, dash='dot')), row=3, col=1)
+    fig.add_hline(y=DESIGN_LIMITS['TP']['value'], line_dash="dash", line_color="red", row=3, col=1)
+    
+    # TN
+    fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_TN'],
+                            name='进水TN', line=dict(color='#2980B9', width=2)), row=4, col=1)
+    mask = df_trend['outlet_TN_real'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TN_real'],
+                                name='出水TN_实测', line=dict(color='#1ABC9C', width=2.5)), row=4, col=1)
+    mask = df_trend['outlet_TN_pred'].notna()
+    if mask.any():
+        fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TN_pred'],
+                                name='出水TN_预测', line=dict(color='#1ABC9C', width=2, dash='dot')), row=4, col=1)
+    fig.add_hline(y=DESIGN_LIMITS['TN']['value'], line_dash="dash", line_color="red", row=4, col=1)
+    
+    fig.update_layout(height=600, showlegend=True, hovermode='x unified')
+    fig.update_xaxes(title_text="时间（北京时间）", row=4, col=1)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("📭 数据收集中... 请等待更多数据点（至少2个时间点）")
 
 # ---- 记忆长度与分频调控 ----
 st.markdown('<div class="section-header">🧠 记忆长度与分频调控策略</div>', unsafe_allow_html=True)
@@ -834,31 +1071,35 @@ if mem is not None and mem > 0:
 else:
     st.info(f"ℹ️ {indicator} 不适用于记忆长度分析")
 
-# ---- 异常诊断 ----
+# ---- 异常诊断与工艺优化建议（强化版，结合进水和出水） ----
 st.markdown('<div class="section-header">🔍 异常诊断与工艺优化建议</div>', unsafe_allow_html=True)
 st.caption("💡 基于同类型A²/O工艺经验库 + 当前工况多维度分析")
 
+# 始终显示进水诊断（即使无预测）
+inlet_diag = diagnose_inlet(inlet)
+outlet_diag = []
 if has_pred:
-    diagnoses = diagnose_system(inlet, outlet_pred, params['PAC'], params['碳源'], params['MLSS'], params['DO'])
-    if diagnoses:
-        level_order = {'critical': 0, 'warning': 1, 'info': 2}
-        diagnoses.sort(key=lambda x: level_order.get(x['level'], 3))
-        for d in diagnoses:
-            with st.expander(f"{d['title']}（当前值：{d['current']}）", expanded=(d['level'] == 'critical')):
-                col_r, col_a = st.columns([1, 1])
-                with col_r:
-                    st.markdown("**🔍 可能原因**")
-                    for r in d['reasons']:
-                        st.markdown(f"- {r}")
-                with col_a:
-                    st.markdown("**💡 针对性工艺优化措施**")
-                    for a in d['actions']:
-                        st.markdown(f"- {a}")
-    else:
-        st.success("✅ 系统运行正常，未检测到异常")
-        st.info("📋 建议：保持当前运行参数，定期巡检设备。")
+    outlet_diag = diagnose_outlet(outlet_pred, inlet, params['PAC'], params['碳源'], params['MLSS'], params['DO'])
+
+all_diag = inlet_diag + outlet_diag
+if all_diag:
+    # 按严重程度排序
+    level_order = {'critical': 0, 'warning': 1, 'info': 2}
+    all_diag.sort(key=lambda x: level_order.get(x['level'], 3))
+    for d in all_diag:
+        with st.expander(f"{d['title']}（当前值：{d['current']}）", expanded=(d['level'] == 'critical')):
+            col_r, col_a = st.columns([1, 1])
+            with col_r:
+                st.markdown("**🔍 可能原因**")
+                for r in d['reasons']:
+                    st.markdown(f"- {r}")
+            with col_a:
+                st.markdown("**💡 针对性工艺优化措施**")
+                for a in d['actions']:
+                    st.markdown(f"- {a}")
 else:
-    st.info("💡 点击左侧「预测」按钮后，将显示详细的异常诊断与工艺优化建议")
+    st.success("✅ 系统运行正常，未检测到异常")
+    st.info("📋 建议：保持当前运行参数，定期巡检设备。")
 
 # ---- 永久记忆统计 ----
 st.markdown("---")
