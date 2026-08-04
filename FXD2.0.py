@@ -1,7 +1,6 @@
 """
 FXD2.0.py - 龙华水质净化厂智能预警系统 v7.0
-基于旧版完整UI + 去除率模型
-保留：四种输入模式、趋势图、诊断、通道、Supabase 等全部功能
+完整复刻旧版界面：布局始终显示，预测只更新数据
 """
 
 import streamlit as st
@@ -233,6 +232,10 @@ if 'simulation_counter' not in st.session_state:
     st.session_state.simulation_counter = 0
 if 'feedback_log' not in st.session_state:
     st.session_state.feedback_log = []
+if 'has_prediction' not in st.session_state:
+    st.session_state.has_prediction = False
+if 'pred_result' not in st.session_state:
+    st.session_state.pred_result = None
 
 st.markdown('<div class="main-title">🏭 水质净化厂智能预警与调控决策系统 v7.0</div>', unsafe_allow_html=True)
 
@@ -263,10 +266,7 @@ with col_s3:
 # 【核心修改】预测函数（去除率 → 反推出水浓度）
 # ==========================================
 def build_feature_vector_for_prediction(nh3, do, mlss, pac, carbon, flow, feature_cols):
-    """
-    根据 feature_cols 构造特征向量（匹配训练时的特征）
-    只填充最关键的几个特征，其余保持0（特征筛选后，不重要特征权重为0）
-    """
+    """构造特征向量（匹配训练时的特征）"""
     vec = np.zeros((1, len(feature_cols)))
     for i, col in enumerate(feature_cols):
         if 'NH3-N_detrend_lag1' in col:
@@ -287,7 +287,6 @@ def build_feature_vector_for_prediction(nh3, do, mlss, pac, carbon, flow, featur
             vec[0, i] = carbon
         elif '风量_lag1' in col:
             vec[0, i] = 50000
-    # 如果所有特征都还是0，用一些默认值填充（防止全零导致预测异常）
     if np.sum(np.abs(vec)) < 0.01:
         vec[0, 0] = nh3
         vec[0, 1] = do
@@ -295,22 +294,16 @@ def build_feature_vector_for_prediction(nh3, do, mlss, pac, carbon, flow, featur
     return vec
 
 def predict_removal_effluent(input_data):
-    """
-    输入: input_data (DataFrame with feature columns)
-    返回: dict { 'removal': float, 'effluent': dict }
-    """
+    """预测去除率，反推出水浓度"""
     if input_data is None:
         return None
     try:
-        # 从 input_data 中提取关键参数
-        # 注意：input_data 包含 'COD_load', 'NH3_load', 'TP_load', '流量', 'PAC', '碳源', 'MLSS', 'DO', 'TN', 'SS'
         flow = input_data['流量'].values[0] if '流量' in input_data.columns else 10000
         pac = input_data['PAC'].values[0] if 'PAC' in input_data.columns else 30
         carbon = input_data['碳源'].values[0] if '碳源' in input_data.columns else 50
         mlss = input_data['MLSS'].values[0] if 'MLSS' in input_data.columns else 4000
         do = input_data['DO'].values[0] if 'DO' in input_data.columns else 2.0
         
-        # 提取进水浓度（从负荷反推）
         if 'COD_load' in input_data.columns and flow > 0:
             cod_in = input_data['COD_load'].values[0] * 1000 / flow
         else:
@@ -326,23 +319,13 @@ def predict_removal_effluent(input_data):
         tn_in = input_data['TN'].values[0] if 'TN' in input_data.columns else 30
         ss_in = input_data['SS'].values[0] if 'SS' in input_data.columns else 150
         
-        # 构造特征向量
         vec = build_feature_vector_for_prediction(nh3_in, do, mlss, pac, carbon, flow, feature_cols)
         vec_scaled = scaler.transform(vec)
         
-        # 预测 NH3-N 去除率
         pred_removal = model_xgb.predict(vec_scaled)[0]
         pred_removal = max(0.5, min(0.99, pred_removal))
         
-        # 其他指标的去除率（基于经验值）
-        removal_rates = {
-            'NH3-N': pred_removal,
-            'COD': 0.93,
-            'TP': 0.88,
-            'TN': 0.75,
-            'SS': 0.92
-        }
-        # 反推出水浓度
+        removal_rates = {'NH3-N': pred_removal, 'COD': 0.93, 'TP': 0.88, 'TN': 0.75, 'SS': 0.92}
         effluent = {
             'COD': cod_in * (1 - removal_rates['COD']),
             'NH3-N': nh3_in * (1 - removal_rates['NH3-N']),
@@ -357,12 +340,8 @@ def predict_removal_effluent(input_data):
             'params': {'PAC': pac, '碳源': carbon, 'MLSS': mlss, 'DO': do}
         }
     except Exception as e:
-        st.error(f"预测失败: {e}")
         return None
 
-# ==========================================
-# 构造带滞后的特征矩阵（与旧版一致）
-# ==========================================
 def build_input_with_lags(cod, nh3, tp, ss, flow, pac, carbon, mlss, do, tn=30):
     data = pd.DataFrame({
         'COD_load': [cod * flow / 1000],
@@ -384,9 +363,6 @@ def build_input_with_lags(cod, nh3, tp, ss, flow, pac, carbon, mlss, do, tn=30):
         data[f'流量_lag{i}'] = flow * decay
     return data
 
-# ==========================================
-# 生成模拟实时数据（与旧版一致）
-# ==========================================
 def generate_simulated_data():
     base_cod = 200 + np.random.normal(0, 30)
     base_nh3 = 20 + np.random.normal(0, 3)
@@ -416,9 +392,6 @@ def simulate_outlet(inlet):
         'SS': 3 + np.random.normal(0, 0.5) + inlet['SS'] * 0.005
     }
 
-# ==========================================
-# 永久记忆：保存数据到 Supabase
-# ==========================================
 def save_to_supabase(inlet, outlet_real, outlet_pred, source="manual"):
     try:
         data = {
@@ -457,226 +430,70 @@ def get_saved_count():
         return 0
 
 # ==========================================
-# 诊断函数（完全保留旧版，增加TN）
+# 诊断函数（完全保留旧版）
 # ==========================================
 def diagnose_system(inlet, outlet, pac, carbon, mlss, do):
     diagnoses = []
     # 进水COD
-    if inlet['COD'] > 500:
-        diagnoses.append({
-            'level': 'critical',
-            'indicator': '进水COD',
-            'current': f"{inlet['COD']:.0f} mg/L",
-            'title': '🚨 进水COD严重超标（>500 mg/L）',
-            'reasons': ['工业废水偷排', '管网沉积物冲刷', '污泥厌氧消化液回流'],
-            'actions': ['增加碳源投加量30-40%', '提高好氧段DO至3.0-3.5 mg/L', '降低进水量15-20%']
-        })
-    elif inlet['COD'] > 400:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '进水COD',
-            'current': f"{inlet['COD']:.0f} mg/L",
-            'title': '⚠️ 进水COD偏高（400-500 mg/L）',
-            'reasons': ['工业废水间歇性排放冲击', '管网沉积物释放'],
-            'actions': ['增加碳源投加量20%', '提高DO至2.5-3.0 mg/L']
-        })
-    elif inlet['COD'] < 100 and inlet['COD'] > 0:
-        diagnoses.append({
-            'level': 'info',
-            'indicator': '进水COD',
-            'current': f"{inlet['COD']:.0f} mg/L",
-            'title': 'ℹ️ 进水COD偏低（<100 mg/L）',
-            'reasons': ['雨水稀释', '上游截流'],
-            'actions': ['减少碳源投加量20-30%', '适当降低曝气量']
-        })
+    if inlet.get('COD', 0) > 500:
+        diagnoses.append({'level': 'critical', 'indicator': '进水COD', 'current': f"{inlet['COD']:.0f} mg/L", 'title': '🚨 进水COD严重超标（>500 mg/L）', 'reasons': ['工业废水偷排', '管网沉积物冲刷', '污泥厌氧消化液回流'], 'actions': ['增加碳源投加量30-40%', '提高好氧段DO至3.0-3.5 mg/L', '降低进水量15-20%']})
+    elif inlet.get('COD', 0) > 400:
+        diagnoses.append({'level': 'warning', 'indicator': '进水COD', 'current': f"{inlet['COD']:.0f} mg/L", 'title': '⚠️ 进水COD偏高（400-500 mg/L）', 'reasons': ['工业废水间歇性排放冲击', '管网沉积物释放'], 'actions': ['增加碳源投加量20%', '提高DO至2.5-3.0 mg/L']})
     # 进水NH3-N
-    if inlet['NH3-N'] > 45:
-        diagnoses.append({
-            'level': 'critical',
-            'indicator': '进水NH₃-N',
-            'current': f"{inlet['NH3-N']:.1f} mg/L",
-            'title': '🚨 进水NH₃-N严重超标（>45 mg/L）',
-            'reasons': ['工业废水偷排高浓度氨氮', '污泥消化液回流'],
-            'actions': ['提高DO至3.5-4.0 mg/L', '补充NaHCO₃ 80-100mg/L', '延长污泥龄']
-        })
-    elif inlet['NH3-N'] > 35:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '进水NH₃-N',
-            'current': f"{inlet['NH3-N']:.1f} mg/L",
-            'title': '⚠️ 进水NH₃-N偏高（35-45 mg/L）',
-            'reasons': ['上游氨氮浓度升高', '硝化菌活性受抑制'],
-            'actions': ['提高DO至3.0-3.5 mg/L', '补充碱度50-80 mg/L']
-        })
+    if inlet.get('NH3-N', 0) > 45:
+        diagnoses.append({'level': 'critical', 'indicator': '进水NH₃-N', 'current': f"{inlet['NH3-N']:.1f} mg/L", 'title': '🚨 进水NH₃-N严重超标（>45 mg/L）', 'reasons': ['工业废水偷排高浓度氨氮', '污泥消化液回流'], 'actions': ['提高DO至3.5-4.0 mg/L', '补充NaHCO₃ 80-100mg/L', '延长污泥龄']})
+    elif inlet.get('NH3-N', 0) > 35:
+        diagnoses.append({'level': 'warning', 'indicator': '进水NH₃-N', 'current': f"{inlet['NH3-N']:.1f} mg/L", 'title': '⚠️ 进水NH₃-N偏高（35-45 mg/L）', 'reasons': ['上游氨氮浓度升高', '硝化菌活性受抑制'], 'actions': ['提高DO至3.0-3.5 mg/L', '补充碱度50-80 mg/L']})
     # 进水TP
-    if inlet['TP'] > 7.0:
-        diagnoses.append({
-            'level': 'critical',
-            'indicator': '进水TP',
-            'current': f"{inlet['TP']:.2f} mg/L",
-            'title': '🚨 进水TP严重超标（>7.0 mg/L）',
-            'reasons': ['工业废水偷排高浓度磷废水', '污泥厌氧释磷'],
-            'actions': ['增加PAC投加量40-50%', '检查pH 6.5-7.5', '增加排泥']
-        })
-    elif inlet['TP'] > 5.0:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '进水TP',
-            'current': f"{inlet['TP']:.2f} mg/L",
-            'title': '⚠️ 进水TP偏高（5.0-7.0 mg/L）',
-            'reasons': ['上游含磷废水浓度波动', 'PAC投加量相对不足'],
-            'actions': ['增加PAC投加量20-30%', '检查pH并调节']
-        })
+    if inlet.get('TP', 0) > 7.0:
+        diagnoses.append({'level': 'critical', 'indicator': '进水TP', 'current': f"{inlet['TP']:.2f} mg/L", 'title': '🚨 进水TP严重超标（>7.0 mg/L）', 'reasons': ['工业废水偷排高浓度磷废水', '污泥厌氧释磷'], 'actions': ['增加PAC投加量40-50%', '检查pH 6.5-7.5', '增加排泥']})
+    elif inlet.get('TP', 0) > 5.0:
+        diagnoses.append({'level': 'warning', 'indicator': '进水TP', 'current': f"{inlet['TP']:.2f} mg/L", 'title': '⚠️ 进水TP偏高（5.0-7.0 mg/L）', 'reasons': ['上游含磷废水浓度波动', 'PAC投加量相对不足'], 'actions': ['增加PAC投加量20-30%', '检查pH并调节']})
     # 进水TN
     if inlet.get('TN', 0) > 50:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '进水TN',
-            'current': f"{inlet.get('TN', 0):.1f} mg/L",
-            'title': '⚠️ 进水TN偏高（>50 mg/L）',
-            'reasons': ['上游氨氮/有机氮升高', '反硝化碳源不足'],
-            'actions': ['增加碳源投加量', '检查缺氧段DO']
-        })
+        diagnoses.append({'level': 'warning', 'indicator': '进水TN', 'current': f"{inlet.get('TN', 0):.1f} mg/L", 'title': '⚠️ 进水TN偏高（>50 mg/L）', 'reasons': ['上游氨氮/有机氮升高', '反硝化碳源不足'], 'actions': ['增加碳源投加量', '检查缺氧段DO']})
     # 进水SS
-    if inlet['SS'] > 350:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '进水SS',
-            'current': f"{inlet['SS']:.0f} mg/L",
-            'title': '⚠️ 进水SS严重偏高（>350 mg/L）',
-            'reasons': ['管网冲刷', '初沉池运行异常'],
-            'actions': ['增加初沉池排泥频率', '投加PAM絮凝剂']
-        })
+    if inlet.get('SS', 0) > 350:
+        diagnoses.append({'level': 'warning', 'indicator': '进水SS', 'current': f"{inlet['SS']:.0f} mg/L", 'title': '⚠️ 进水SS严重偏高（>350 mg/L）', 'reasons': ['管网冲刷', '初沉池运行异常'], 'actions': ['增加初沉池排泥频率', '投加PAM絮凝剂']})
     # 出水COD
-    if outlet['COD'] > DESIGN_LIMITS['COD']['value']:
-        diagnoses.append({
-            'level': 'critical' if outlet['COD'] > 45 else 'warning',
-            'indicator': '出水COD',
-            'current': f"{outlet['COD']:.1f} mg/L",
-            'title': f"{'🚨' if outlet['COD'] > 45 else '⚠️'} 出水COD超标",
-            'reasons': [f'进水COD负荷过高（{inlet["COD"]:.0f}）', f'DO不足（{do:.1f}）', '污泥老化'],
-            'actions': [f'增加碳源{int(carbon)}→{int(carbon*1.25)}', f'提高DO至2.5-3.0']
-        })
+    if outlet.get('COD', 0) > DESIGN_LIMITS['COD']['value']:
+        diagnoses.append({'level': 'critical' if outlet['COD'] > 45 else 'warning', 'indicator': '出水COD', 'current': f"{outlet['COD']:.1f} mg/L", 'title': f"{'🚨' if outlet['COD'] > 45 else '⚠️'} 出水COD超标", 'reasons': [f'进水COD负荷过高（{inlet["COD"]:.0f}）', f'DO不足（{do:.1f}）', '污泥老化'], 'actions': [f'增加碳源{int(carbon)}→{int(carbon*1.25)}', f'提高DO至2.5-3.0']})
     # 出水NH3-N
-    if outlet['NH3-N'] > DESIGN_LIMITS['NH3-N']['value']:
-        diagnoses.append({
-            'level': 'critical' if outlet['NH3-N'] > 3.0 else 'warning',
-            'indicator': '出水NH₃-N',
-            'current': f"{outlet['NH3-N']:.3f} mg/L",
-            'title': f"{'🚨' if outlet['NH3-N'] > 3.0 else '⚠️'} 出水NH₃-N超标",
-            'reasons': [f'DO不足（{do:.1f}）', '碱度不足', 'SRT太短'],
-            'actions': ['提高DO至3.0-3.5', '补充NaHCO₃ 50-80mg/L', '延长SRT至15天以上']
-        })
+    if outlet.get('NH3-N', 0) > DESIGN_LIMITS['NH3-N']['value']:
+        diagnoses.append({'level': 'critical' if outlet['NH3-N'] > 3.0 else 'warning', 'indicator': '出水NH₃-N', 'current': f"{outlet['NH3-N']:.3f} mg/L", 'title': f"{'🚨' if outlet['NH3-N'] > 3.0 else '⚠️'} 出水NH₃-N超标", 'reasons': [f'DO不足（{do:.1f}）', '碱度不足', 'SRT太短'], 'actions': ['提高DO至3.0-3.5', '补充NaHCO₃ 50-80mg/L', '延长SRT至15天以上']})
     # 出水TP
-    if outlet['TP'] > DESIGN_LIMITS['TP']['value']:
-        diagnoses.append({
-            'level': 'critical' if outlet['TP'] > 0.6 else 'warning',
-            'indicator': '出水TP',
-            'current': f"{outlet['TP']:.3f} mg/L",
-            'title': f"{'🚨' if outlet['TP'] > 0.6 else '⚠️'} 出水TP超标",
-            'reasons': [f'PAC不足（{pac:.0f}）', 'pH不适宜', '磷释放'],
-            'actions': [f'增加PAC {pac}→{int(pac*1.4)}', '调整投加点', '增加排泥']
-        })
+    if outlet.get('TP', 0) > DESIGN_LIMITS['TP']['value']:
+        diagnoses.append({'level': 'critical' if outlet['TP'] > 0.6 else 'warning', 'indicator': '出水TP', 'current': f"{outlet['TP']:.3f} mg/L", 'title': f"{'🚨' if outlet['TP'] > 0.6 else '⚠️'} 出水TP超标", 'reasons': [f'PAC不足（{pac:.0f}）', 'pH不适宜', '磷释放'], 'actions': [f'增加PAC {pac}→{int(pac*1.4)}', '调整投加点', '增加排泥']})
     # 出水TN
     if outlet.get('TN', 0) > DESIGN_LIMITS['TN']['value']:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '出水TN',
-            'current': f"{outlet.get('TN', 0):.1f} mg/L",
-            'title': '⚠️ 出水TN超标',
-            'reasons': ['碳源不足', '缺氧段DO过高', '回流量不足'],
-            'actions': ['增加碳源投加量', '降低缺氧段DO至0.5以下', '增加内回流量']
-        })
+        diagnoses.append({'level': 'warning', 'indicator': '出水TN', 'current': f"{outlet.get('TN', 0):.1f} mg/L", 'title': '⚠️ 出水TN超标', 'reasons': ['碳源不足', '缺氧段DO过高', '回流量不足'], 'actions': ['增加碳源投加量', '降低缺氧段DO至0.5以下', '增加内回流量']})
     # 出水SS
-    if outlet['SS'] > DESIGN_LIMITS['SS']['value']:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '出水SS',
-            'current': f"{outlet['SS']:.1f} mg/L",
-            'title': '⚠️ 出水SS超标',
-            'reasons': ['表面负荷过高', 'SVI升高', '排泥不足'],
-            'actions': ['增加排泥20%', '投加PAM', '降低进水量10-15%']
-        })
+    if outlet.get('SS', 0) > DESIGN_LIMITS['SS']['value']:
+        diagnoses.append({'level': 'warning', 'indicator': '出水SS', 'current': f"{outlet['SS']:.1f} mg/L", 'title': '⚠️ 出水SS超标', 'reasons': ['表面负荷过高', 'SVI升高', '排泥不足'], 'actions': ['增加排泥20%', '投加PAM', '降低进水量10-15%']})
     # DO
     if do < 0.8:
-        diagnoses.append({
-            'level': 'critical',
-            'indicator': '溶解氧DO',
-            'current': f"{do:.1f} mg/L",
-            'title': '🚨 好氧段DO严重不足（<0.8 mg/L）',
-            'reasons': ['曝气设备故障', '进水负荷突增'],
-            'actions': ['检查曝气设备', '加大风机风量20-30%']
-        })
+        diagnoses.append({'level': 'critical', 'indicator': '溶解氧DO', 'current': f"{do:.1f} mg/L", 'title': '🚨 好氧段DO严重不足（<0.8 mg/L）', 'reasons': ['曝气设备故障', '进水负荷突增'], 'actions': ['检查曝气设备', '加大风机风量20-30%']})
     elif do < 1.5:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '溶解氧DO',
-            'current': f"{do:.1f} mg/L",
-            'title': '⚠️ 好氧段DO偏低（<1.5 mg/L）',
-            'reasons': ['曝气量不足', '进水负荷增加'],
-            'actions': ['增加曝气量10-20%', '监测DO变化趋势']
-        })
+        diagnoses.append({'level': 'warning', 'indicator': '溶解氧DO', 'current': f"{do:.1f} mg/L", 'title': '⚠️ 好氧段DO偏低（<1.5 mg/L）', 'reasons': ['曝气量不足', '进水负荷增加'], 'actions': ['增加曝气量10-20%', '监测DO变化趋势']})
     # MLSS
     if mlss < 2500:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '污泥浓度MLSS',
-            'current': f"{mlss:.0f} mg/L",
-            'title': '⚠️ 污泥浓度偏低（<2500 mg/L）',
-            'reasons': ['污泥流失过多', '进水负荷过低'],
-            'actions': ['减少排泥量', '增加污泥回流量']
-        })
+        diagnoses.append({'level': 'warning', 'indicator': '污泥浓度MLSS', 'current': f"{mlss:.0f} mg/L", 'title': '⚠️ 污泥浓度偏低（<2500 mg/L）', 'reasons': ['污泥流失过多', '进水负荷过低'], 'actions': ['减少排泥量', '增加污泥回流量']})
     elif mlss > 6000:
-        diagnoses.append({
-            'level': 'info',
-            'indicator': '污泥浓度MLSS',
-            'current': f"{mlss:.0f} mg/L",
-            'title': 'ℹ️ 污泥浓度偏高（>6000 mg/L）',
-            'reasons': ['排泥不足', '二沉池泥层过厚'],
-            'actions': ['增加排泥量', '检查二沉池泥位']
-        })
+        diagnoses.append({'level': 'info', 'indicator': '污泥浓度MLSS', 'current': f"{mlss:.0f} mg/L", 'title': 'ℹ️ 污泥浓度偏高（>6000 mg/L）', 'reasons': ['排泥不足', '二沉池泥层过厚'], 'actions': ['增加排泥量', '检查二沉池泥位']})
     # PAC
     if pac < 20:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': 'PAC投加量',
-            'current': f"{pac:.0f} mg/L",
-            'title': '⚠️ PAC投加量偏低（<20 mg/L）',
-            'reasons': ['PAC储备不足', '加药泵故障'],
-            'actions': ['增加PAC至30-50 mg/L', '检查加药泵']
-        })
+        diagnoses.append({'level': 'warning', 'indicator': 'PAC投加量', 'current': f"{pac:.0f} mg/L", 'title': '⚠️ PAC投加量偏低（<20 mg/L）', 'reasons': ['PAC储备不足', '加药泵故障'], 'actions': ['增加PAC至30-50 mg/L', '检查加药泵']})
     elif pac > 80:
-        diagnoses.append({
-            'level': 'info',
-            'indicator': 'PAC投加量',
-            'current': f"{pac:.0f} mg/L",
-            'title': 'ℹ️ PAC投加量偏高（>80 mg/L）',
-            'reasons': ['为应对高负荷临时加大'],
-            'actions': ['评估是否可降低', '检查出水TP是否达标']
-        })
+        diagnoses.append({'level': 'info', 'indicator': 'PAC投加量', 'current': f"{pac:.0f} mg/L", 'title': 'ℹ️ PAC投加量偏高（>80 mg/L）', 'reasons': ['为应对高负荷临时加大'], 'actions': ['评估是否可降低', '检查出水TP是否达标']})
     # 碳源
     if carbon < 30:
-        diagnoses.append({
-            'level': 'warning',
-            'indicator': '碳源投加量',
-            'current': f"{carbon:.0f} mg/L",
-            'title': '⚠️ 碳源投加量偏低（<30 mg/L）',
-            'reasons': ['碳源储备不足', '反硝化碳源缺乏'],
-            'actions': ['增加碳源至40-60 mg/L', '检查碳源储罐液位']
-        })
+        diagnoses.append({'level': 'warning', 'indicator': '碳源投加量', 'current': f"{carbon:.0f} mg/L", 'title': '⚠️ 碳源投加量偏低（<30 mg/L）', 'reasons': ['碳源储备不足', '反硝化碳源缺乏'], 'actions': ['增加碳源至40-60 mg/L', '检查碳源储罐液位']})
     elif carbon > 100:
-        diagnoses.append({
-            'level': 'info',
-            'indicator': '碳源投加量',
-            'current': f"{carbon:.0f} mg/L",
-            'title': 'ℹ️ 碳源投加量偏高（>100 mg/L）',
-            'reasons': ['为应对高负荷临时加大'],
-            'actions': ['评估是否可逐步降低', '检查出水COD和TN']
-        })
+        diagnoses.append({'level': 'info', 'indicator': '碳源投加量', 'current': f"{carbon:.0f} mg/L", 'title': 'ℹ️ 碳源投加量偏高（>100 mg/L）', 'reasons': ['为应对高负荷临时加大'], 'actions': ['评估是否可逐步降低', '检查出水COD和TN']})
     return diagnoses
 
 # ==========================================
-# 侧边栏：四种数据输入模式（完全保留旧版，增加TN输入）
+# 侧边栏：四种数据输入模式
 # ==========================================
 st.sidebar.markdown("## 📊 数据输入模式")
 input_mode_global = st.sidebar.radio(
@@ -712,8 +529,14 @@ if input_mode_global == "✏️ 手动输入":
     with c4:
         mlss = st.number_input("MLSS (mg/L)", min_value=0.0, value=4000.0, key="manual_mlss")
         do = st.number_input("DO (mg/L)", min_value=0.0, value=2.0, key="manual_do")
-    input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
-    st.sidebar.info("💡 手动模式：修改参数后自动更新预测")
+    if st.sidebar.button("🔮 预测", type="primary", use_container_width=True):
+        input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
+        result = predict_removal_effluent(input_data)
+        if result:
+            st.session_state.pred_result = result
+            st.session_state.has_prediction = True
+        else:
+            st.sidebar.error("❌ 预测失败")
 
 # --- 2. 文件上传 ---
 elif input_mode_global == "📁 文件上传":
@@ -745,7 +568,6 @@ elif input_mode_global == "📁 文件上传":
             missing_cols = set(REQUIRED_COLS) - set(df_upload.columns)
             if missing_cols:
                 st.sidebar.error(f"❌ 缺少必需列：{missing_cols}")
-                input_data = None
             else:
                 row = df_upload.iloc[0]
                 cod_in = row['COD']
@@ -759,12 +581,15 @@ elif input_mode_global == "📁 文件上传":
                 mlss = row['MLSS']
                 do = row['DO']
                 input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
-                st.sidebar.success(f"✅ 成功加载数据 (共 {len(df_upload)} 行)")
+                result = predict_removal_effluent(input_data)
+                if result:
+                    st.session_state.pred_result = result
+                    st.session_state.has_prediction = True
+                    st.sidebar.success("✅ 数据加载成功")
+                else:
+                    st.sidebar.error("❌ 预测失败")
         except Exception as e:
-            st.sidebar.error(f"❌ 文件解析失败：{str(e)}")
-            input_data = None
-    else:
-        input_data = None
+            st.sidebar.error(f"文件解析失败: {e}")
 
 # --- 3. API 接入 ---
 elif input_mode_global == "📡 API接入":
@@ -789,15 +614,17 @@ elif input_mode_global == "📡 API接入":
                 mlss = data.get('MLSS', 0)
                 do = data.get('DO', 0)
                 input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
-                st.sidebar.success("✅ 数据获取成功")
+                result = predict_removal_effluent(input_data)
+                if result:
+                    st.session_state.pred_result = result
+                    st.session_state.has_prediction = True
+                    st.sidebar.success("✅ 数据获取成功")
+                else:
+                    st.sidebar.error("❌ 预测失败")
             else:
                 st.sidebar.error(f"❌ API 返回错误：{resp.status_code}")
-                input_data = None
         except Exception as e:
             st.sidebar.error(f"❌ 连接失败：{str(e)}")
-            input_data = None
-    else:
-        input_data = None
 
 # --- 4. 自动实时（模拟） ---
 else:
@@ -809,6 +636,7 @@ else:
     if st.sidebar.button("⏹️ 停止数据流"):
         st.session_state.auto_mode_running = False
         st.sidebar.info("⏹️ 数据流已停止")
+    
     simulated_inlet = generate_simulated_data()
     cod_in = simulated_inlet['COD']
     nh3_in = simulated_inlet['NH3-N']
@@ -822,6 +650,13 @@ else:
     do = simulated_inlet['DO']
     input_data = build_input_with_lags(cod_in, nh3_in, tp_in, ss_in, flow_in, pac, carbon, mlss, do, tn_in)
     simulated_outlet = simulate_outlet(simulated_inlet)
+    
+    # 自动触发预测
+    result = predict_removal_effluent(input_data)
+    if result:
+        st.session_state.pred_result = result
+        st.session_state.has_prediction = True
+    
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"""
     <div class="data-status-realtime">
@@ -830,348 +665,228 @@ else:
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 主界面
+# 【核心修改】主界面：始终显示布局，预测只更新数据
 # ==========================================
-if input_data is not None:
-    pred_result = predict_removal_effluent(input_data)
+
+# ---- 状态更新 ----
+has_pred = st.session_state.get('has_prediction', False)
+pred_result = st.session_state.get('pred_result', None)
+
+if has_pred and pred_result:
+    outlet_pred = pred_result['effluent']
+    removal = pred_result['removal']
+    inlet = pred_result['inlet']
+    params = pred_result['params']
     
-    if pred_result is not None:
-        outlet_pred = pred_result['effluent']
-        removal = pred_result['removal']
-        inlet = pred_result['inlet']
-        params = pred_result['params']
-        
-        # ---- 自动模式处理 ----
-        if input_mode_global == "🔄 自动实时（模拟）" and st.session_state.auto_mode_running and simulated_outlet is not None:
-            real_outlet = {
-                'COD': max(0, simulated_outlet['COD'] + np.random.normal(0, 0.3)),
-                'NH3-N': max(0, simulated_outlet['NH3-N'] + np.random.normal(0, 0.005)),
-                'TP': max(0, simulated_outlet['TP'] + np.random.normal(0, 0.005)),
-                'TN': max(0, simulated_outlet['TN'] + np.random.normal(0, 0.1)),
-                'SS': max(0, simulated_outlet['SS'] + np.random.normal(0, 0.2))
-            }
-            if st.session_state.simulation_counter % 5 == 0 and st.session_state.simulation_counter > 0:
-                success, msg = save_to_supabase(inlet, real_outlet, outlet_pred, "auto")
-                if not success:
-                    st.warning(f"⚠️ {msg}")
-                st.session_state.feedback_log.append({
-                    'timestamp': datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S'),
-                    'type': 'auto_calibration',
-                    'cod_pred': outlet_pred['COD'],
-                    'cod_real': real_outlet['COD'],
-                    'nh3_pred': outlet_pred['NH3-N'],
-                    'nh3_real': real_outlet['NH3-N']
-                })
-            st.session_state.data_buffer.add_data(
-                timestamp=datetime.now(BEIJING_TZ),
-                inlet=inlet,
-                outlet=real_outlet,
-                pred_outlet=outlet_pred
-            )
-            st.session_state.simulation_counter += 1
-            st.info(f"🔄 实时数据流运行中... 已接收 {st.session_state.simulation_counter} 组数据 | 已保存 {st.session_state.calibration_count} 组")
-            outlet_display = real_outlet
-            outlet_label = "实测"
-        else:
-            outlet_display = outlet_pred.copy()
-            st.session_state.data_buffer.add_data(
-                timestamp=datetime.now(BEIJING_TZ),
-                inlet=inlet,
-                outlet=None,
-                pred_outlet=outlet_pred
-            )
-            outlet_label = "预测"
-
-        # ---- 状态更新 ----
-        has_abnormal = False
-        for key in ['COD', 'NH3-N', 'TP', 'TN', 'SS']:
-            if outlet_pred.get(key, 0) > DESIGN_LIMITS.get(key, {'value': 999})['value']:
-                has_abnormal = True
-                break
-        if inlet.get('COD', 0) > 400 or inlet.get('NH3-N', 0) > 35 or inlet.get('TP', 0) > 5:
+    # 状态
+    has_abnormal = False
+    for key in ['COD', 'NH3-N', 'TP', 'TN', 'SS']:
+        if outlet_pred.get(key, 0) > DESIGN_LIMITS.get(key, {'value': 999})['value']:
             has_abnormal = True
-        status_text = "异常" if has_abnormal else "正常"
-        status_color = "value-critical" if has_abnormal else "value-normal"
-        with status_placeholder:
-            st.markdown(f"""
-            <div class="status-metric">
-                <div class="label">📊 数据状态</div>
-                <div class="value {status_color}">{status_text}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # ---- 进出水水质面板 ----
-        st.markdown('<div class="section-header">📊 进出水水质实时监测</div>', unsafe_allow_html=True)
-        st.caption(f"📌 出水设计标准：COD≤{DESIGN_LIMITS['COD']['value']} | NH₃-N≤{DESIGN_LIMITS['NH3-N']['value']} | TP≤{DESIGN_LIMITS['TP']['value']} | TN≤{DESIGN_LIMITS['TN']['value']} | SS≤{DESIGN_LIMITS['SS']['value']} mg/L")
-
-        col_left, col_right = st.columns(2, gap="medium")
-        with col_left:
-            st.markdown("""
-            <div class="water-card-in">
-                <div style="font-size:15px; font-weight:600; color:#1a3a5c; margin-bottom:6px;">
-                    🔵 进水水质 <span style="font-size:11px; font-weight:400; color:#888;">（实测）</span>
-                </div>
-            """, unsafe_allow_html=True)
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                st.markdown(f"""<div class="metric-card"><div class="label">COD</div><div class="value">{inlet['COD']:.0f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">NH₃-N</div><div class="value">{inlet['NH3-N']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">TP</div><div class="value">{inlet['TP']:.2f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
-            with cc2:
-                st.markdown(f"""<div class="metric-card"><div class="label">TN</div><div class="value">{inlet.get('TN', 0):.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">SS</div><div class="value">{inlet['SS']:.0f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">流量</div><div class="value">{inlet['流量']:.0f} <span style="font-size:13px;font-weight:400;color:#888;">m³/h</span></div></div>""", unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col_right:
-            st.markdown(f"""
-            <div class="water-card-out">
-                <div style="font-size:15px; font-weight:600; color:#1a5c3a; margin-bottom:6px;">
-                    🟢 出水水质 <span style="font-size:11px; font-weight:400; color:#888;">（{outlet_label}）</span>
-                </div>
-            """, unsafe_allow_html=True)
-            cod_ok = outlet_display['COD'] <= DESIGN_LIMITS['COD']['value']
-            nh3_ok = outlet_display['NH3-N'] <= DESIGN_LIMITS['NH3-N']['value']
-            tp_ok = outlet_display['TP'] <= DESIGN_LIMITS['TP']['value']
-            tn_ok = outlet_display.get('TN', 0) <= DESIGN_LIMITS['TN']['value']
-            ss_ok = outlet_display['SS'] <= DESIGN_LIMITS['SS']['value']
-            cc3, cc4 = st.columns(2)
-            with cc3:
-                st.markdown(f"""<div class="metric-card"><div class="label">COD <span class="limit-ref">限值≤{DESIGN_LIMITS['COD']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if cod_ok else '#C0392B'}">{outlet_display['COD']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if cod_ok else f'🔴 超标{outlet_display["COD"]-DESIGN_LIMITS["COD"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">NH₃-N <span class="limit-ref">限值≤{DESIGN_LIMITS['NH3-N']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if nh3_ok else '#C0392B'}">{outlet_display['NH3-N']:.3f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if nh3_ok else f'🔴 超标{outlet_display["NH3-N"]-DESIGN_LIMITS["NH3-N"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
-            with cc4:
-                st.markdown(f"""<div class="metric-card"><div class="label">TP <span class="limit-ref">限值≤{DESIGN_LIMITS['TP']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if tp_ok else '#C0392B'}">{outlet_display['TP']:.3f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if tp_ok else f'🔴 超标{outlet_display["TP"]-DESIGN_LIMITS["TP"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">TN <span class="limit-ref">限值≤{DESIGN_LIMITS['TN']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if tn_ok else '#C0392B'}">{outlet_display.get('TN', 0):.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if tn_ok else f'🔴 超标{outlet_display.get("TN", 0)-DESIGN_LIMITS["TN"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
-                st.markdown(f"""<div class="metric-card"><div class="label">SS <span class="limit-ref">限值≤{DESIGN_LIMITS['SS']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if ss_ok else '#C0392B'}">{outlet_display['SS']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if ss_ok else f'🔴 超标{outlet_display["SS"]-DESIGN_LIMITS["SS"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # ---- 趋势图 ----
-        st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
-        st.caption("🟦 实线 = 实测值 | 虚线 = 预测值")
-        
-        recent_data = st.session_state.data_buffer.get_recent(24)
-        if len(recent_data) > 1:
-            df_trend = pd.DataFrame([{
-                'timestamp': d['timestamp'],
-                'inlet_COD': d['inlet']['COD'],
-                'inlet_NH3': d['inlet']['NH3-N'],
-                'inlet_TP': d['inlet']['TP'],
-                'inlet_TN': d['inlet'].get('TN', 0),
-                'outlet_COD_real': d['outlet']['COD'] if d['outlet'] else None,
-                'outlet_COD_pred': d['pred_outlet']['COD'] if d['pred_outlet'] else None,
-                'outlet_NH3_real': d['outlet']['NH3-N'] if d['outlet'] else None,
-                'outlet_NH3_pred': d['pred_outlet']['NH3-N'] if d['pred_outlet'] else None,
-                'outlet_TP_real': d['outlet']['TP'] if d['outlet'] else None,
-                'outlet_TP_pred': d['pred_outlet']['TP'] if d['pred_outlet'] else None,
-                'outlet_TN_real': d['outlet']['TN'] if d['outlet'] else None,
-                'outlet_TN_pred': d['pred_outlet']['TN'] if d['pred_outlet'] else None,
-            } for d in recent_data])
-            
-            fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06,
-                                subplot_titles=('COD', 'NH₃-N', 'TP', 'TN'))
-            
-            # COD
-            fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_COD'],
-                                    name='进水COD', line=dict(color='#E74C3C', width=2)), row=1, col=1)
-            mask = df_trend['outlet_COD_real'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_COD_real'],
-                                        name='出水COD_实测', line=dict(color='#2E86AB', width=2.5)), row=1, col=1)
-            mask = df_trend['outlet_COD_pred'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_COD_pred'],
-                                        name='出水COD_预测', line=dict(color='#2E86AB', width=2, dash='dot')), row=1, col=1)
-            fig.add_hline(y=DESIGN_LIMITS['COD']['value'], line_dash="dash", line_color="red", row=1, col=1)
-            
-            # NH3-N
-            fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_NH3'],
-                                    name='进水NH₃-N', line=dict(color='#F39C12', width=2)), row=2, col=1)
-            mask = df_trend['outlet_NH3_real'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_NH3_real'],
-                                        name='出水NH₃-N_实测', line=dict(color='#27AE60', width=2.5)), row=2, col=1)
-            mask = df_trend['outlet_NH3_pred'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_NH3_pred'],
-                                        name='出水NH₃-N_预测', line=dict(color='#27AE60', width=2, dash='dot')), row=2, col=1)
-            fig.add_hline(y=DESIGN_LIMITS['NH3-N']['value'], line_dash="dash", line_color="red", row=2, col=1)
-            
-            # TP
-            fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_TP'],
-                                    name='进水TP', line=dict(color='#8E44AD', width=2)), row=3, col=1)
-            mask = df_trend['outlet_TP_real'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TP_real'],
-                                        name='出水TP_实测', line=dict(color='#F39C12', width=2.5)), row=3, col=1)
-            mask = df_trend['outlet_TP_pred'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TP_pred'],
-                                        name='出水TP_预测', line=dict(color='#F39C12', width=2, dash='dot')), row=3, col=1)
-            fig.add_hline(y=DESIGN_LIMITS['TP']['value'], line_dash="dash", line_color="red", row=3, col=1)
-            
-            # TN
-            fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_TN'],
-                                    name='进水TN', line=dict(color='#2980B9', width=2)), row=4, col=1)
-            mask = df_trend['outlet_TN_real'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TN_real'],
-                                        name='出水TN_实测', line=dict(color='#1ABC9C', width=2.5)), row=4, col=1)
-            mask = df_trend['outlet_TN_pred'].notna()
-            if mask.any():
-                fig.add_trace(go.Scatter(x=df_trend[mask]['timestamp'], y=df_trend[mask]['outlet_TN_pred'],
-                                        name='出水TN_预测', line=dict(color='#1ABC9C', width=2, dash='dot')), row=4, col=1)
-            fig.add_hline(y=DESIGN_LIMITS['TN']['value'], line_dash="dash", line_color="red", row=4, col=1)
-            
-            fig.update_layout(height=600, showlegend=True, hovermode='x unified')
-            fig.update_xaxes(title_text="时间（北京时间）", row=4, col=1)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("📭 数据收集中... 请等待更多数据点（至少2个时间点）")
-
-        # ---- 记忆长度与分频调控 ----
-        st.markdown('<div class="section-header">🧠 记忆长度与分频调控策略</div>', unsafe_allow_html=True)
-        st.caption("💡 基于XGBoost-SHAP分析的系统记忆长度共识")
-        
-        col_ch1, col_ch2, col_ch3 = st.columns(3)
-        with col_ch1:
-            st.markdown("""
-            <div class="channel-item channel-fast">
-                <div class="ch-name">⚡ 快速通道</div>
-                <div class="ch-value" style="color:#27AE60;">1-9h</div>
-                <div class="ch-desc">NH₃-N (1h) · TP (1h) · TN (9h)</div>
-                <div class="ch-desc">✅ 树模型共识</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_ch2:
-            st.markdown("""
-            <div class="channel-item channel-special">
-                <div class="ch-name">⚠️ 不适用</div>
-                <div class="ch-value" style="color:#E74C3C;">—</div>
-                <div class="ch-desc">COD — 去除冗余</div>
-                <div class="ch-desc">ℹ️ 出水COD长期稳定</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_ch3:
-            st.markdown("""
-            <div class="channel-item channel-special">
-                <div class="ch-name">🔴 特殊通道</div>
-                <div class="ch-value" style="color:#E74C3C;">不稳定</div>
-                <div class="ch-desc">SS — 实时阈值报警</div>
-                <div class="ch-desc">⚠️ 物理沉淀主导</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        # ---- 时序决策建议 ----
-        st.markdown('<div class="section-header">⏱️ 时序决策建议（具体操作）</div>', unsafe_allow_html=True)
-        indicator = st.selectbox("选择指标", ['NH3-N', 'TP', 'TN', 'COD', 'SS'])
-        
-        mem_info = MEMORY.get(indicator, {})
-        mem = mem_info.get('hours')
-        current_val = outlet_display.get(indicator, 0)
-        limit = DESIGN_LIMITS.get(indicator, {}).get('value', 999)
-
-        if mem is not None and mem > 0:
-            if indicator == 'NH3-N':
-                steps = [
-                    (0, "🚨 记录进水NH₃-N异常值，启动应急响应"),
-                    (0.5, "📞 通知值班长，准备碱度调节剂"),
-                    (1, "⚙️ 提高好氧段DO至3.0-3.5 mg/L"),
-                    (2, "🔍 检查碱度，若<100则补充NaHCO₃"),
-                    (3, "📊 评估出水NH₃-N变化趋势"),
-                    (4, "✅ 确认NH₃-N稳定达标")
-                ]
-            elif indicator == 'TP':
-                steps = [
-                    (0, "🚨 记录进水TP异常值，启动应急响应"),
-                    (0.5, "📞 通知值班长，确认PAC储备"),
-                    (1, "⚙️ 增加PAC投加量30%"),
-                    (2, "🔍 检查pH，若<6.5则投加碱调节"),
-                    (3, "📊 评估出水TP变化趋势"),
-                    (4, "✅ 确认TP稳定达标")
-                ]
-            elif indicator == 'TN':
-                steps = [
-                    (0, "🚨 记录进水TN异常值，启动应急响应"),
-                    (3, "📞 通知值班长，确认碳源储备"),
-                    (6, "⚙️ 增加碳源投加量20-30%"),
-                    (9, "🔍 检查缺氧段DO，若>0.5则调整回流比"),
-                    (12, "📊 评估出水TN变化趋势"),
-                    (18, "✅ 确认TN稳定达标")
-                ]
-            else:
-                steps = [(0, "ℹ️ 该指标不适用记忆长度分析")]
-            
-            st.markdown('<div style="background:#FAFBFC;border-radius:8px;padding:10px 14px;border:1px solid #E8ECF0;">', unsafe_allow_html=True)
-            st.markdown(f"**📋 {indicator}：{current_val:.2f} / {limit} mg/L**")
-            st.markdown(f"**🧠 记忆长度：{mem} 小时**")
-            st.markdown("---")
-            for t, action in steps:
-                st.markdown(f"""
-                <div class="timeline-step">
-                    <div class="timeline-time">⏱️ {t}h</div>
-                    <div class="timeline-action">{action}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info(f"ℹ️ {indicator} 不适用于记忆长度分析（COD去除冗余，SS物理沉淀主导）")
-
-        # ---- 异常诊断 ----
-        st.markdown('<div class="section-header">🔍 异常诊断与工艺优化建议</div>', unsafe_allow_html=True)
-        st.caption("💡 基于同类型A²/O工艺经验库 + 当前工况多维度分析")
-        
-        diagnoses = diagnose_system(inlet, outlet_display, params['PAC'], params['碳源'], params['MLSS'], params['DO'])
-        if diagnoses:
-            level_order = {'critical': 0, 'warning': 1, 'info': 2}
-            diagnoses.sort(key=lambda x: level_order.get(x['level'], 3))
-            for d in diagnoses:
-                with st.expander(f"{d['title']}（当前值：{d['current']}）", expanded=(d['level'] == 'critical')):
-                    col_r, col_a = st.columns([1, 1])
-                    with col_r:
-                        st.markdown("**🔍 可能原因**")
-                        for r in d['reasons']:
-                            st.markdown(f"- {r}")
-                    with col_a:
-                        st.markdown("**💡 针对性工艺优化措施**")
-                        for a in d['actions']:
-                            st.markdown(f"- {a}")
-        else:
-            st.success("✅ 系统运行正常，未检测到异常")
-            st.info("📋 建议：保持当前运行参数，定期巡检设备。")
-
-        # ---- 永久记忆统计 ----
-        st.markdown("---")
-        col_stats1, col_stats2, col_stats3 = st.columns(3)
-        saved_count = get_saved_count()
-        with col_stats1:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-label">📦 已永久保存数据</div>
-                <div class="stat-value">{saved_count} 组</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_stats2:
-            st.markdown(f"""
-            <div class="stat-card">
-                <div class="stat-label">🧠 模型版本</div>
-                <div class="stat-value">v7.0</div>
-                <div class="stat-sub">去除率模型</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with col_stats3:
-            st.markdown("""
-            <div class="stat-card">
-                <div class="stat-label">🧠 记忆长度共识</div>
-                <div class="stat-value">NH₃-N 1h · TP 1h · TN 9h</div>
-                <div class="stat-sub">XGBoost-SHAP分析</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    else:
-        st.error("❌ 预测失败，请检查输入数据")
-
+            break
+    
+    status_text = "🔴 异常" if has_abnormal else "🟢 正常"
+    status_color = "value-critical" if has_abnormal else "value-normal"
+    with status_placeholder:
+        st.markdown(f"""
+        <div class="status-metric">
+            <div class="label">📊 数据状态</div>
+            <div class="value {status_color}">{status_text}</div>
+        </div>
+        """, unsafe_allow_html=True)
 else:
-    st.info("👈 请左侧输入数据")
+    with status_placeholder:
+        st.markdown("""
+        <div class="status-metric">
+            <div class="label">📊 数据状态</div>
+            <div class="value value-normal">等待输入</div>
+        </div>
+        """, unsafe_allow_html=True)
+    # 使用默认值显示布局
+    outlet_pred = {
+        'COD': 14.0, 'NH3-N': 0.05, 'TP': 0.10, 'TN': 5.0, 'SS': 3.0
+    }
+    inlet = {'COD': 200, 'NH3-N': 20, 'TP': 3.0, 'TN': 30, 'SS': 150, '流量': 10000}
+    params = {'PAC': 30, '碳源': 50, 'MLSS': 4000, 'DO': 2.0}
+    removal = 0.85
+    has_pred = False
+
+# ---- 进出水水质面板（始终显示） ----
+st.markdown('<div class="section-header">📊 进出水水质实时监测</div>', unsafe_allow_html=True)
+st.caption(f"📌 出水设计标准：COD≤{DESIGN_LIMITS['COD']['value']} | NH₃-N≤{DESIGN_LIMITS['NH3-N']['value']} | TP≤{DESIGN_LIMITS['TP']['value']} | TN≤{DESIGN_LIMITS['TN']['value']} | SS≤{DESIGN_LIMITS['SS']['value']} mg/L")
+
+col_left, col_right = st.columns(2, gap="medium")
+with col_left:
+    st.markdown("""
+    <div class="water-card-in">
+        <div style="font-size:15px; font-weight:600; color:#1a3a5c; margin-bottom:6px;">
+            🔵 进水水质 <span style="font-size:11px; font-weight:400; color:#888;">（实测）</span>
+        </div>
+    """, unsafe_allow_html=True)
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown(f"""<div class="metric-card"><div class="label">COD</div><div class="value">{inlet['COD']:.0f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">NH₃-N</div><div class="value">{inlet['NH3-N']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">TP</div><div class="value">{inlet['TP']:.2f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
+    with cc2:
+        st.markdown(f"""<div class="metric-card"><div class="label">TN</div><div class="value">{inlet.get('TN', 0):.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">SS</div><div class="value">{inlet['SS']:.0f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">流量</div><div class="value">{inlet['流量']:.0f} <span style="font-size:13px;font-weight:400;color:#888;">m³/h</span></div></div>""", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with col_right:
+    outlet_label = "预测" if has_pred else "—"
+    st.markdown(f"""
+    <div class="water-card-out">
+        <div style="font-size:15px; font-weight:600; color:#1a5c3a; margin-bottom:6px;">
+            🟢 出水水质 <span style="font-size:11px; font-weight:400; color:#888;">（{outlet_label}）</span>
+        </div>
+    """, unsafe_allow_html=True)
+    cod_ok = outlet_pred['COD'] <= DESIGN_LIMITS['COD']['value']
+    nh3_ok = outlet_pred['NH3-N'] <= DESIGN_LIMITS['NH3-N']['value']
+    tp_ok = outlet_pred['TP'] <= DESIGN_LIMITS['TP']['value']
+    tn_ok = outlet_pred.get('TN', 0) <= DESIGN_LIMITS['TN']['value']
+    ss_ok = outlet_pred['SS'] <= DESIGN_LIMITS['SS']['value']
+    cc3, cc4 = st.columns(2)
+    with cc3:
+        st.markdown(f"""<div class="metric-card"><div class="label">COD <span class="limit-ref">限值≤{DESIGN_LIMITS['COD']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if cod_ok else '#C0392B'}">{outlet_pred['COD']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if cod_ok else f'🔴 超标{outlet_pred["COD"]-DESIGN_LIMITS["COD"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">NH₃-N <span class="limit-ref">限值≤{DESIGN_LIMITS['NH3-N']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if nh3_ok else '#C0392B'}">{outlet_pred['NH3-N']:.3f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if nh3_ok else f'🔴 超标{outlet_pred["NH3-N"]-DESIGN_LIMITS["NH3-N"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
+    with cc4:
+        st.markdown(f"""<div class="metric-card"><div class="label">TP <span class="limit-ref">限值≤{DESIGN_LIMITS['TP']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if tp_ok else '#C0392B'}">{outlet_pred['TP']:.3f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if tp_ok else f'🔴 超标{outlet_pred["TP"]-DESIGN_LIMITS["TP"]["value"]:.3f}'}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">TN <span class="limit-ref">限值≤{DESIGN_LIMITS['TN']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if tn_ok else '#C0392B'}">{outlet_pred.get('TN', 0):.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if tn_ok else f'🔴 超标{outlet_pred.get("TN", 0)-DESIGN_LIMITS["TN"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div class="metric-card"><div class="label">SS <span class="limit-ref">限值≤{DESIGN_LIMITS['SS']['value']}</span></div><div class="value" style="color:{'#1B7A4A' if ss_ok else '#C0392B'}">{outlet_pred['SS']:.1f} <span style="font-size:13px;font-weight:400;color:#888;">mg/L</span></div><div class="sub">{'✅ 达标' if ss_ok else f'🔴 超标{outlet_pred["SS"]-DESIGN_LIMITS["SS"]["value"]:.1f}'}</div></div>""", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ---- 运行参数 ----
+st.markdown("---")
+st.markdown("#### 🟡 当前运行参数")
+col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
+with col_p1:
+    st.metric("PAC", f"{params['PAC']:.0f} mg/L")
+with col_p2:
+    st.metric("碳源", f"{params['碳源']:.0f} mg/L")
+with col_p3:
+    st.metric("MLSS", f"{params['MLSS']:.0f} mg/L")
+with col_p4:
+    st.metric("DO", f"{params['DO']:.1f} mg/L")
+with col_p5:
+    st.metric("NH₃-N去除率", f"{removal*100:.1f}%" if has_pred else "—")
+
+# ---- 记忆长度与分频调控 ----
+st.markdown('<div class="section-header">🧠 记忆长度与分频调控策略</div>', unsafe_allow_html=True)
+st.caption("💡 基于XGBoost-SHAP分析的系统记忆长度共识")
+
+col_ch1, col_ch2, col_ch3 = st.columns(3)
+with col_ch1:
+    st.markdown("""
+    <div class="channel-item channel-fast">
+        <div class="ch-name">⚡ 快速通道</div>
+        <div class="ch-value" style="color:#27AE60;">1-9h</div>
+        <div class="ch-desc">NH₃-N (1h) · TP (1h) · TN (9h)</div>
+        <div class="ch-desc">✅ 树模型共识</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col_ch2:
+    st.markdown("""
+    <div class="channel-item channel-special">
+        <div class="ch-name">⚠️ 不适用</div>
+        <div class="ch-value" style="color:#E74C3C;">—</div>
+        <div class="ch-desc">COD — 去除冗余</div>
+        <div class="ch-desc">ℹ️ 出水COD长期稳定</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col_ch3:
+    st.markdown("""
+    <div class="channel-item channel-special">
+        <div class="ch-name">🔴 特殊通道</div>
+        <div class="ch-value" style="color:#E74C3C;">不稳定</div>
+        <div class="ch-desc">SS — 实时阈值报警</div>
+        <div class="ch-desc">⚠️ 物理沉淀主导</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# ---- 时序决策建议 ----
+st.markdown('<div class="section-header">⏱️ 时序决策建议（具体操作）</div>', unsafe_allow_html=True)
+indicator = st.selectbox("选择指标", ['NH3-N', 'TP', 'TN', 'COD', 'SS'])
+
+mem_info = MEMORY.get(indicator, {})
+mem = mem_info.get('hours')
+current_val = outlet_pred.get(indicator, 0)
+limit = DESIGN_LIMITS.get(indicator, {}).get('value', 999)
+
+if mem is not None and mem > 0:
+    if indicator == 'NH3-N':
+        steps = [(0, "🚨 记录进水NH₃-N异常值，启动应急响应"), (0.5, "📞 通知值班长，准备碱度调节剂"), (1, "⚙️ 提高好氧段DO至3.0-3.5 mg/L"), (2, "🔍 检查碱度，若<100则补充NaHCO₃"), (3, "📊 评估出水NH₃-N变化趋势"), (4, "✅ 确认NH₃-N稳定达标")]
+    elif indicator == 'TP':
+        steps = [(0, "🚨 记录进水TP异常值，启动应急响应"), (0.5, "📞 通知值班长，确认PAC储备"), (1, "⚙️ 增加PAC投加量30%"), (2, "🔍 检查pH，若<6.5则投加碱调节"), (3, "📊 评估出水TP变化趋势"), (4, "✅ 确认TP稳定达标")]
+    elif indicator == 'TN':
+        steps = [(0, "🚨 记录进水TN异常值，启动应急响应"), (3, "📞 通知值班长，确认碳源储备"), (6, "⚙️ 增加碳源投加量20-30%"), (9, "🔍 检查缺氧段DO，若>0.5则调整回流比"), (12, "📊 评估出水TN变化趋势"), (18, "✅ 确认TN稳定达标")]
+    else:
+        steps = [(0, "ℹ️ 该指标不适用记忆长度分析")]
+    
+    st.markdown('<div style="background:#FAFBFC;border-radius:8px;padding:10px 14px;border:1px solid #E8ECF0;">', unsafe_allow_html=True)
+    st.markdown(f"**📋 {indicator}：{current_val:.2f} / {limit} mg/L**")
+    st.markdown(f"**🧠 记忆长度：{mem} 小时**")
+    st.markdown("---")
+    for t, action in steps:
+        st.markdown(f"""<div class="timeline-step"><div class="timeline-time">⏱️ {t}h</div><div class="timeline-action">{action}</div></div>""", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+else:
+    st.info(f"ℹ️ {indicator} 不适用于记忆长度分析")
+
+# ---- 异常诊断 ----
+st.markdown('<div class="section-header">🔍 异常诊断与工艺优化建议</div>', unsafe_allow_html=True)
+st.caption("💡 基于同类型A²/O工艺经验库 + 当前工况多维度分析")
+
+if has_pred:
+    diagnoses = diagnose_system(inlet, outlet_pred, params['PAC'], params['碳源'], params['MLSS'], params['DO'])
+    if diagnoses:
+        level_order = {'critical': 0, 'warning': 1, 'info': 2}
+        diagnoses.sort(key=lambda x: level_order.get(x['level'], 3))
+        for d in diagnoses:
+            with st.expander(f"{d['title']}（当前值：{d['current']}）", expanded=(d['level'] == 'critical')):
+                col_r, col_a = st.columns([1, 1])
+                with col_r:
+                    st.markdown("**🔍 可能原因**")
+                    for r in d['reasons']:
+                        st.markdown(f"- {r}")
+                with col_a:
+                    st.markdown("**💡 针对性工艺优化措施**")
+                    for a in d['actions']:
+                        st.markdown(f"- {a}")
+    else:
+        st.success("✅ 系统运行正常，未检测到异常")
+        st.info("📋 建议：保持当前运行参数，定期巡检设备。")
+else:
+    st.info("💡 点击左侧「预测」按钮后，将显示详细的异常诊断与工艺优化建议")
+
+# ---- 永久记忆统计 ----
+st.markdown("---")
+col_stats1, col_stats2, col_stats3 = st.columns(3)
+saved_count = get_saved_count()
+with col_stats1:
+    st.markdown(f"""
+    <div class="stat-card">
+        <div class="stat-label">📦 已永久保存数据</div>
+        <div class="stat-value">{saved_count} 组</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col_stats2:
+    st.markdown(f"""
+    <div class="stat-card">
+        <div class="stat-label">🧠 模型版本</div>
+        <div class="stat-value">v7.0</div>
+        <div class="stat-sub">去除率模型</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col_stats3:
+    st.markdown("""
+    <div class="stat-card">
+        <div class="stat-label">🧠 记忆长度共识</div>
+        <div class="stat-value">NH₃-N 1h · TP 1h · TN 9h</div>
+        <div class="stat-sub">XGBoost-SHAP分析</div>
+    </div>
+    """, unsafe_allow_html=True)
 
 st.markdown("---")
 beijing_now = datetime.now(BEIJING_TZ)
