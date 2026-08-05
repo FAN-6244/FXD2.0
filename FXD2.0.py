@@ -1336,10 +1336,10 @@ if input_data is not None:
                 """, unsafe_allow_html=True)
 
     # ================================================================
-    # 2. 趋势图（近24小时）—— 标签均匀分布在时间轴右侧
+    # 2. 趋势图（近24小时）—— 采用固定偏移，避免时间跨度计算错误
     # ================================================================
     st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
-    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧均匀分布")
+    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧")
 
     recent_data = st.session_state.data_buffer.get_recent(24)
     if len(recent_data) > 1:
@@ -1397,7 +1397,7 @@ if input_data is not None:
                 )
             fig.add_hline(y=limit, line_dash="dash", line_color="red", row=row, col=1)
 
-        # ----- 为每条曲线添加末端标签，均匀分布在时间轴右侧 -----
+        # ----- 为每条曲线添加末端标签，采用固定偏移（每个标签偏移 30 秒递增） -----
         # 收集所有trace的最后一个有效点
         trace_data = []
         for trace in fig.data:
@@ -1415,52 +1415,27 @@ if input_data is not None:
             })
         
         if trace_data:
-            # 获取所有x坐标的最大值（最后一个时间点）
-            max_x = max(p['x'] for p in trace_data)
-            # 计算时间跨度（从第一个到最后一个）
-            min_x = min(p['x'] for p in trace_data)
-            time_span = (max_x - min_x).total_seconds()
-            # 为每个标签分配不同的x偏移，均匀分布在时间轴右侧
-            n = len(trace_data)
-            # 如果时间跨度很小（小于1小时），则用固定偏移
-            if time_span < 3600:
-                # 每个标签偏移 30 秒 * (i+1)
-                for i, p in enumerate(trace_data):
-                    offset = timedelta(seconds=30 * (i+1))
-                    x_pos = p['x'] + offset
-                    y_pos = p['y']
-                    # 垂直偏移根据索引奇偶
-                    yshift = 10 if (i % 2 == 0) else -10
-                    fig.add_annotation(
-                        x=x_pos,
-                        y=y_pos,
-                        text=p['name'],
-                        showarrow=False,
-                        yshift=yshift,
-                        font=dict(size=9, color=p['color']),
-                        xanchor='left'
-                    )
-            else:
-                # 将标签均匀分布在最后时间点之后的总时间跨度的20%内
-                extra_span = time_span * 0.2  # 右侧额外显示区域
-                for i, p in enumerate(trace_data):
-                    # 均匀分布在 extra_span 内
-                    ratio = (i + 1) / (n + 1)
-                    offset_seconds = extra_span * ratio
-                    x_pos = p['x'] + timedelta(seconds=offset_seconds)
-                    y_pos = p['y']
-                    yshift = 10 if (i % 2 == 0) else -10
-                    fig.add_annotation(
-                        x=x_pos,
-                        y=y_pos,
-                        text=p['name'],
-                        showarrow=False,
-                        yshift=yshift,
-                        font=dict(size=9, color=p['color']),
-                        xanchor='left'
-                    )
+            # 使用固定偏移：每个标签在 x 方向偏移 30 秒 * (i+1)
+            for i, p in enumerate(trace_data):
+                # 将 x 转换为 datetime（如果是 Timestamp 则转换为 datetime）
+                x_pos = p['x']
+                if hasattr(x_pos, 'to_pydatetime'):
+                    x_pos = x_pos.to_pydatetime()
+                x_offset = x_pos + timedelta(seconds=30 * (i + 1))
+                y_pos = p['y']
+                # 垂直偏移根据索引奇偶
+                yshift = 10 if (i % 2 == 0) else -10
+                fig.add_annotation(
+                    x=x_offset,
+                    y=y_pos,
+                    text=p['name'],
+                    showarrow=False,
+                    yshift=yshift,
+                    font=dict(size=9, color=p['color']),
+                    xanchor='left'
+                )
 
-        fig.update_layout(height=650, showlegend=False, hovermode='x unified')  # 关闭图例，避免重复
+        fig.update_layout(height=650, showlegend=False, hovermode='x unified')
         fig.update_xaxes(title_text="时间（北京时间）", row=5, col=1)
         st.plotly_chart(fig, use_container_width=True)
     else:
