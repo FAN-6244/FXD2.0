@@ -1111,7 +1111,7 @@ elif input_mode_global == "📁 文件上传":
                 cod_in = row['COD']
                 nh3_in = row['NH3-N']
                 tp_in = row['TP']
-                tn_in = row.get('TN', 30)  # 兼容旧版
+                tn_in = row.get('TN', 30)
                 ss_in = row['SS']
                 flow_in = row['流量']
                 mlss = row['MLSS']
@@ -1282,7 +1282,7 @@ if input_data is not None:
         """, unsafe_allow_html=True)
 
     # ================================================================
-    # 1. 进出水水质面板
+    # 1. 进出水水质面板（不变）
     # ================================================================
     st.markdown('<div class="section-header">📊 进出水水质实时监测</div>', unsafe_allow_html=True)
     st.caption(f"📌 出水设计标准：COD≤{DESIGN_LIMITS['COD']['value']} | NH₃-N≤{DESIGN_LIMITS['NH3-N']['value']} | TP≤{DESIGN_LIMITS['TP']['value']} | TN≤{DESIGN_LIMITS['TN']['value']} | SS≤{DESIGN_LIMITS['SS']['value']} mg/L")
@@ -1340,89 +1340,102 @@ if input_data is not None:
     # 已删除：运行参数指标卡（PAC、碳源、MLSS、DO、平均去除率）
 
     # ================================================================
-    # 2. 趋势图（近24小时）—— 每条线旁已添加指标名称标签
+    # 2. 趋势图（近24小时）—— 已扩展至5个指标，修复注释重叠
     # ================================================================
     st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
-    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 🟥进水COD 🟧进水NH₃-N 🟪进水TP")
+    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分")
 
     recent_data = st.session_state.data_buffer.get_recent(24)
     if len(recent_data) > 1:
+        # ----- 构建包含全部5个指标的数据框 -----
         df_trend = pd.DataFrame([{
             'timestamp': d['timestamp'],
             'inlet_COD': d['inlet']['COD'],
             'inlet_NH3': d['inlet']['NH3-N'],
             'inlet_TP': d['inlet']['TP'],
+            'inlet_TN': d['inlet']['TN'],
+            'inlet_SS': d['inlet']['SS'],
             'outlet_COD_real': d['outlet']['COD'] if d['outlet'] else None,
             'outlet_COD_pred': d['pred_outlet']['COD'] if d['pred_outlet'] else None,
             'outlet_NH3_real': d['outlet']['NH3-N'] if d['outlet'] else None,
             'outlet_NH3_pred': d['pred_outlet']['NH3-N'] if d['pred_outlet'] else None,
             'outlet_TP_real': d['outlet']['TP'] if d['outlet'] else None,
             'outlet_TP_pred': d['pred_outlet']['TP'] if d['pred_outlet'] else None,
+            'outlet_TN_real': d['outlet']['TN'] if d['outlet'] else None,
+            'outlet_TN_pred': d['pred_outlet']['TN'] if d['pred_outlet'] else None,
+            'outlet_SS_real': d['outlet']['SS'] if d['outlet'] else None,
+            'outlet_SS_pred': d['pred_outlet']['SS'] if d['pred_outlet'] else None,
         } for d in recent_data])
 
-        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.08,
-                            subplot_titles=('COD', 'NH₃-N', 'TP'))
+        # 定义5个子图标题
+        subplot_titles = ('COD', 'NH₃-N', 'TP', 'TN', 'SS')
+        fig = make_subplots(rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.06,
+                            subplot_titles=subplot_titles)
 
-        # COD
-        fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_COD'],
-                                name='进水 COD', line=dict(color='#E74C3C', width=2)), row=1, col=1)
-        mask_real = df_trend['outlet_COD_real'].notna()
-        if mask_real.any():
-            fig.add_trace(go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real]['outlet_COD_real'],
-                                    name='出水 COD 实测', line=dict(color='#2E86AB', width=2.5)), row=1, col=1)
-        mask_pred = df_trend['outlet_COD_pred'].notna()
-        if mask_pred.any():
-            fig.add_trace(go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred]['outlet_COD_pred'],
-                                    name='出水 COD 预测', line=dict(color='#2E86AB', width=2, dash='dot')), row=1, col=1)
-        fig.add_hline(y=DESIGN_LIMITS['COD']['value'], line_dash="dash", line_color="red", row=1, col=1)
+        # 定义每个指标的配置 (列名前缀, 进水颜色, 实测颜色, 预测颜色, 限值)
+        indicators_config = [
+            ('COD', '#E74C3C', '#2E86AB', '#2E86AB', DESIGN_LIMITS['COD']['value']),
+            ('NH3', '#F39C12', '#27AE60', '#27AE60', DESIGN_LIMITS['NH3-N']['value']),
+            ('TP', '#8E44AD', '#F39C12', '#F39C12', DESIGN_LIMITS['TP']['value']),
+            ('TN', '#1F77B4', '#FF7F0E', '#FF7F0E', DESIGN_LIMITS['TN']['value']),
+            ('SS', '#9467BD', '#D62728', '#D62728', DESIGN_LIMITS['SS']['value'])
+        ]
 
-        # NH3-N
-        fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_NH3'],
-                                name='进水 NH₃-N', line=dict(color='#F39C12', width=2)), row=2, col=1)
-        mask_real = df_trend['outlet_NH3_real'].notna()
-        if mask_real.any():
-            fig.add_trace(go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real]['outlet_NH3_real'],
-                                    name='出水 NH₃-N 实测', line=dict(color='#27AE60', width=2.5)), row=2, col=1)
-        mask_pred = df_trend['outlet_NH3_pred'].notna()
-        if mask_pred.any():
-            fig.add_trace(go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred]['outlet_NH3_pred'],
-                                    name='出水 NH₃-N 预测', line=dict(color='#27AE60', width=2, dash='dot')), row=2, col=1)
-        fig.add_hline(y=DESIGN_LIMITS['NH3-N']['value'], line_dash="dash", line_color="red", row=2, col=1)
+        for row, (prefix, in_color, real_color, pred_color, limit) in enumerate(indicators_config, start=1):
+            # 进水
+            fig.add_trace(
+                go.Scatter(x=df_trend['timestamp'], y=df_trend[f'inlet_{prefix}'],
+                           name=f'进水 {prefix}', line=dict(color=in_color, width=2)),
+                row=row, col=1
+            )
+            # 实测出水（如果有）
+            mask_real = df_trend[f'outlet_{prefix}_real'].notna()
+            if mask_real.any():
+                fig.add_trace(
+                    go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real][f'outlet_{prefix}_real'],
+                               name=f'出水 {prefix} 实测', line=dict(color=real_color, width=2.5)),
+                    row=row, col=1
+                )
+            # 预测出水
+            mask_pred = df_trend[f'outlet_{prefix}_pred'].notna()
+            if mask_pred.any():
+                fig.add_trace(
+                    go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred][f'outlet_{prefix}_pred'],
+                               name=f'出水 {prefix} 预测', line=dict(color=pred_color, width=2, dash='dot')),
+                    row=row, col=1
+                )
+            # 限值线
+            fig.add_hline(y=limit, line_dash="dash", line_color="red", row=row, col=1)
 
-        # TP
-        fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_TP'],
-                                name='进水 TP', line=dict(color='#8E44AD', width=2)), row=3, col=1)
-        mask_real = df_trend['outlet_TP_real'].notna()
-        if mask_real.any():
-            fig.add_trace(go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real]['outlet_TP_real'],
-                                    name='出水 TP 实测', line=dict(color='#F39C12', width=2.5)), row=3, col=1)
-        mask_pred = df_trend['outlet_TP_pred'].notna()
-        if mask_pred.any():
-            fig.add_trace(go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred]['outlet_TP_pred'],
-                                    name='出水 TP 预测', line=dict(color='#F39C12', width=2, dash='dot')), row=3, col=1)
-        fig.add_hline(y=DESIGN_LIMITS['TP']['value'], line_dash="dash", line_color="red", row=3, col=1)
-
-        # ⭐ 新增：为每条线添加末端文本标签（满足“每条线旁边写好对应的指标”）
-        for trace in fig.data:
+        # ----- 为每条曲线添加末端标签（避免重叠） -----
+        # 遍历所有trace，对每个trace的最后一个点添加注释
+        # 为防止x相同重叠，按trace索引偏移x（每个加1分钟），同时调整yshift
+        for idx, trace in enumerate(fig.data):
             if len(trace.x) > 0:
+                # 偏移量：每个trace偏移 idx * 30 秒
+                offset = timedelta(seconds=30 * idx)
+                x_pos = trace.x[-1] + offset
+                y_pos = trace.y[-1]
+                # 动态yshift：根据y值上下调整，避免覆盖
+                yshift = 10 if (idx % 2 == 0) else -10
                 fig.add_annotation(
-                    x=trace.x[-1],
-                    y=trace.y[-1],
+                    x=x_pos,
+                    y=y_pos,
                     text=trace.name,
                     showarrow=False,
-                    yshift=8,
-                    font=dict(size=10, color=trace.line.color),
+                    yshift=yshift,
+                    font=dict(size=9, color=trace.line.color),
                     xanchor='left'
                 )
 
-        fig.update_layout(height=450, showlegend=True, hovermode='x unified')
-        fig.update_xaxes(title_text="时间（北京时间）", row=3, col=1)
+        fig.update_layout(height=650, showlegend=True, hovermode='x unified')
+        fig.update_xaxes(title_text="时间（北京时间）", row=5, col=1)
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("📭 数据收集中... 请等待更多数据点（至少2个时间点）")
 
     # ================================================================
-    # 3. 记忆长度与分频调控
+    # 3. 记忆长度与分频调控（不变）
     # ================================================================
     st.markdown('<div class="section-header">🧠 系统记忆长度（SML）与分频调控策略</div>', unsafe_allow_html=True)
     st.caption("💡 基于去除率模型 XGBoost-SHAP 分析（论文结论 v7.0）：NH₃-N=1h · TP=1h · TN=9h · COD/SS=不适用")
@@ -1457,7 +1470,7 @@ if input_data is not None:
         """, unsafe_allow_html=True)
 
     # ================================================================
-    # 4. 时序决策建议
+    # 4. 时序决策建议（不变）
     # ================================================================
     st.markdown('<div class="section-header">⏱️ 时序决策建议（具体操作）</div>', unsafe_allow_html=True)
     indicator_select = st.selectbox("选择指标", ['COD', 'NH3-N', 'TP', 'TN', 'SS'])
@@ -1533,7 +1546,7 @@ if input_data is not None:
         """, unsafe_allow_html=True)
 
     # ================================================================
-    # 5. 异常诊断与工艺优化
+    # 5. 异常诊断与工艺优化（不变）
     # ================================================================
     st.markdown('<div class="section-header">🔍 异常诊断与工艺优化建议</div>', unsafe_allow_html=True)
     st.caption("💡 基于同类型A²/O工艺经验库 + 当前工况多维度分析（细化版）")
@@ -1558,7 +1571,7 @@ if input_data is not None:
         st.info("📋 建议：保持当前运行参数，定期巡检设备。")
 
     # ================================================================
-    # 6. 永久记忆统计
+    # 6. 永久记忆统计（不变）
     # ================================================================
     st.markdown("---")
     col_stats1, col_stats2, col_stats3 = st.columns(3)
