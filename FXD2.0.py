@@ -1336,10 +1336,10 @@ if input_data is not None:
                 """, unsafe_allow_html=True)
 
     # ================================================================
-    # 2. 趋势图（近24小时）—— 采用固定偏移，避免时间跨度计算错误
+    # 2. 趋势图（近24小时）—— 每条曲线注释精确对齐Y轴
     # ================================================================
     st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
-    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧")
+    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧，Y轴精确对齐")
 
     recent_data = st.session_state.data_buffer.get_recent(24)
     if len(recent_data) > 1:
@@ -1397,7 +1397,7 @@ if input_data is not None:
                 )
             fig.add_hline(y=limit, line_dash="dash", line_color="red", row=row, col=1)
 
-        # ----- 为每条曲线添加末端标签，采用固定偏移（每个标签偏移 30 秒递增） -----
+        # ----- 为每条曲线添加末端标签，Y轴精确对齐，无垂直偏移 -----
         # 收集所有trace的最后一个有效点
         trace_data = []
         for trace in fig.data:
@@ -1415,22 +1415,20 @@ if input_data is not None:
             })
         
         if trace_data:
-            # 使用固定偏移：每个标签在 x 方向偏移 30 秒 * (i+1)
+            # 使用固定X偏移：每个标签偏移 30 秒 * (i+1)，确保标签水平错开
             for i, p in enumerate(trace_data):
-                # 将 x 转换为 datetime（如果是 Timestamp 则转换为 datetime）
                 x_pos = p['x']
+                # 确保是 datetime 类型，以便加 timedelta
                 if hasattr(x_pos, 'to_pydatetime'):
                     x_pos = x_pos.to_pydatetime()
                 x_offset = x_pos + timedelta(seconds=30 * (i + 1))
-                y_pos = p['y']
-                # 垂直偏移根据索引奇偶
-                yshift = 10 if (i % 2 == 0) else -10
+                # Y轴精确取末端点的y，不设任何垂直偏移
                 fig.add_annotation(
                     x=x_offset,
-                    y=y_pos,
+                    y=p['y'],
                     text=p['name'],
                     showarrow=False,
-                    yshift=yshift,
+                    yshift=0,                  # 关键：垂直偏移为0，精确对齐Y轴
                     font=dict(size=9, color=p['color']),
                     xanchor='left'
                 )
