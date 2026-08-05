@@ -153,7 +153,7 @@ st.markdown("""
         background: white;
         border-radius: 8px;
         padding: 8px 10px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         text-align: center;
         border-top: 3px solid #ccc;
     }
@@ -1336,10 +1336,10 @@ if input_data is not None:
                 """, unsafe_allow_html=True)
 
     # ================================================================
-    # 2. 趋势图（近24小时）—— 精准标签定位，每条曲线对应唯一文字
+    # 2. 趋势图（近24小时）—— 标签均匀分布在时间轴右侧
     # ================================================================
     st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
-    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧")
+    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧均匀分布")
 
     recent_data = st.session_state.data_buffer.get_recent(24)
     if len(recent_data) > 1:
@@ -1397,65 +1397,70 @@ if input_data is not None:
                 )
             fig.add_hline(y=limit, line_dash="dash", line_color="red", row=row, col=1)
 
-        # ----- 为每条曲线添加末端标签，按子图分组，精准对应 -----
-        # 第一步：提取每个trace的row和最后一个有效点
-        prefix_to_row = {'COD':1, 'NH3':2, 'TP':3, 'TN':4, 'SS':5}
-        grouped_points = {}  # {row: [{'trace': trace, 'x': x, 'y': y, 'name': name}]}
-
+        # ----- 为每条曲线添加末端标签，均匀分布在时间轴右侧 -----
+        # 收集所有trace的最后一个有效点
+        trace_data = []
         for trace in fig.data:
-            # 从trace.name中提取指标前缀
-            name = trace.name
-            # 例如 "进水 COD" -> "COD", "出水 COD 实测" -> "COD"
-            parts = name.split()
-            # 取第二个词（如果以"进水"开头）或第二个词（如果以"出水"开头）
-            if parts[0] == '进水':
-                key = parts[1]
-            elif parts[0] == '出水':
-                key = parts[1]
-            else:
-                continue
-            row = prefix_to_row.get(key)
-            if row is None:
-                continue
-            # 获取最后一个有效点
             x_vals = trace.x
             y_vals = trace.y
             valid_indices = [i for i, (x, y) in enumerate(zip(x_vals, y_vals)) if x is not None and y is not None]
             if not valid_indices:
                 continue
             last_idx = valid_indices[-1]
-            x_last = x_vals[last_idx]
-            y_last = y_vals[last_idx]
-            grouped_points.setdefault(row, []).append({
-                'trace': trace,
-                'x': x_last,
-                'y': y_last,
-                'name': name
+            trace_data.append({
+                'name': trace.name,
+                'x': x_vals[last_idx],
+                'y': y_vals[last_idx],
+                'color': trace.line.color
             })
+        
+        if trace_data:
+            # 获取所有x坐标的最大值（最后一个时间点）
+            max_x = max(p['x'] for p in trace_data)
+            # 计算时间跨度（从第一个到最后一个）
+            min_x = min(p['x'] for p in trace_data)
+            time_span = (max_x - min_x).total_seconds()
+            # 为每个标签分配不同的x偏移，均匀分布在时间轴右侧
+            n = len(trace_data)
+            # 如果时间跨度很小（小于1小时），则用固定偏移
+            if time_span < 3600:
+                # 每个标签偏移 30 秒 * (i+1)
+                for i, p in enumerate(trace_data):
+                    offset = timedelta(seconds=30 * (i+1))
+                    x_pos = p['x'] + offset
+                    y_pos = p['y']
+                    # 垂直偏移根据索引奇偶
+                    yshift = 10 if (i % 2 == 0) else -10
+                    fig.add_annotation(
+                        x=x_pos,
+                        y=y_pos,
+                        text=p['name'],
+                        showarrow=False,
+                        yshift=yshift,
+                        font=dict(size=9, color=p['color']),
+                        xanchor='left'
+                    )
+            else:
+                # 将标签均匀分布在最后时间点之后的总时间跨度的20%内
+                extra_span = time_span * 0.2  # 右侧额外显示区域
+                for i, p in enumerate(trace_data):
+                    # 均匀分布在 extra_span 内
+                    ratio = (i + 1) / (n + 1)
+                    offset_seconds = extra_span * ratio
+                    x_pos = p['x'] + timedelta(seconds=offset_seconds)
+                    y_pos = p['y']
+                    yshift = 10 if (i % 2 == 0) else -10
+                    fig.add_annotation(
+                        x=x_pos,
+                        y=y_pos,
+                        text=p['name'],
+                        showarrow=False,
+                        yshift=yshift,
+                        font=dict(size=9, color=p['color']),
+                        xanchor='left'
+                    )
 
-        # 为每一行添加注释，按y值排序，均匀分布yshift
-        for row, points in grouped_points.items():
-            # 按y值排序
-            points.sort(key=lambda p: p['y'])
-            n = len(points)
-            if n == 0:
-                continue
-            # 分配yshift，从 -(n-1)*10 到 (n-1)*10，步长20
-            for i, p in enumerate(points):
-                yshift = - (n-1) * 10 + i * 20
-                # x偏移5秒
-                x_offset = p['x'] + timedelta(seconds=5)
-                fig.add_annotation(
-                    x=x_offset,
-                    y=p['y'],
-                    text=p['name'],
-                    showarrow=False,
-                    yshift=yshift,
-                    font=dict(size=9, color=p['trace'].line.color),
-                    xanchor='left'
-                )
-
-        fig.update_layout(height=650, showlegend=True, hovermode='x unified')
+        fig.update_layout(height=650, showlegend=False, hovermode='x unified')  # 关闭图例，避免重复
         fig.update_xaxes(title_text="时间（北京时间）", row=5, col=1)
         st.plotly_chart(fig, use_container_width=True)
     else:
