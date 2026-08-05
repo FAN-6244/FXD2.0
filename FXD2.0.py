@@ -1374,13 +1374,23 @@ if input_data is not None:
             ('SS', '#9467BD', '#D62728', '#D62728', DESIGN_LIMITS['SS']['value'])
         ]
 
-        # 添加所有曲线
+        # 添加所有曲线，同时记录每条曲线所属子图行号及其末端点
+        trace_data = []
         for row, (prefix, in_color, real_color, pred_color, limit) in enumerate(indicators_config, start=1):
+            # 进水
             fig.add_trace(
                 go.Scatter(x=df_trend['timestamp'], y=df_trend[f'inlet_{prefix}'],
                            name=f'进水 {prefix}', line=dict(color=in_color, width=2)),
                 row=row, col=1
             )
+            _last = df_trend[f'inlet_{prefix}'].last_valid_index()
+            if _last is not None:
+                trace_data.append({
+                    'name': f'进水 {prefix}', 'row': row,
+                    'x': df_trend.loc[_last, 'timestamp'], 'y': df_trend.loc[_last, f'inlet_{prefix}'],
+                    'color': in_color
+                })
+            # 出水实测
             mask_real = df_trend[f'outlet_{prefix}_real'].notna()
             if mask_real.any():
                 fig.add_trace(
@@ -1388,6 +1398,14 @@ if input_data is not None:
                                name=f'出水 {prefix} 实测', line=dict(color=real_color, width=2.5)),
                     row=row, col=1
                 )
+                _last = df_trend.loc[mask_real, f'outlet_{prefix}_real'].last_valid_index()
+                if _last is not None:
+                    trace_data.append({
+                        'name': f'出水 {prefix} 实测', 'row': row,
+                        'x': df_trend.loc[_last, 'timestamp'], 'y': df_trend.loc[_last, f'outlet_{prefix}_real'],
+                        'color': real_color
+                    })
+            # 出水预测
             mask_pred = df_trend[f'outlet_{prefix}_pred'].notna()
             if mask_pred.any():
                 fig.add_trace(
@@ -1395,41 +1413,59 @@ if input_data is not None:
                                name=f'出水 {prefix} 预测', line=dict(color=pred_color, width=2, dash='dot')),
                     row=row, col=1
                 )
+                _last = df_trend.loc[mask_pred, f'outlet_{prefix}_pred'].last_valid_index()
+                if _last is not None:
+                    trace_data.append({
+                        'name': f'出水 {prefix} 预测', 'row': row,
+                        'x': df_trend.loc[_last, 'timestamp'], 'y': df_trend.loc[_last, f'outlet_{prefix}_pred'],
+                        'color': pred_color
+                    })
             fig.add_hline(y=limit, line_dash="dash", line_color="red", row=row, col=1)
 
-        # ----- 为每条曲线添加末端标签，Y轴精确对齐，无垂直偏移 -----
-        # 收集所有trace的最后一个有效点
-        trace_data = []
-        for trace in fig.data:
-            x_vals = trace.x
-            y_vals = trace.y
-            valid_indices = [i for i, (x, y) in enumerate(zip(x_vals, y_vals)) if x is not None and y is not None]
-            if not valid_indices:
-                continue
-            last_idx = valid_indices[-1]
-            trace_data.append({
-                'name': trace.name,
-                'x': x_vals[last_idx],
-                'y': y_vals[last_idx],
-                'color': trace.line.color
-            })
-        
+        # ----- 为每条曲线添加末端标签 -----
+        # 关键修复：通过 xref/yref 将每个标签绑定到其曲线所属子图的坐标轴。
+        # 原代码未指定 yref，所有标签都被画到第1个子图(COD)的Y轴上，
+        # 导致 NH3-N/TP/TN/SS 的标签 y 值被按 COD 量程(0~300)解析，与曲线严重错位。
+        # 现按 trace 所属 row 绑定 y1..y5，标签 y 与曲线末端精确对齐。
+        # 同一子图内多条曲线末端 y 过近时(如出水实测与预测)，给标签少量垂直像素偏移避免重叠。
         if trace_data:
-            # 使用固定X偏移：每个标签偏移 30 秒 * (i+1)，确保标签水平错开
-            for i, p in enumerate(trace_data):
-                x_pos = p['x']
-                # 确保是 datetime 类型，以便加 timedelta
-                if hasattr(x_pos, 'to_pydatetime'):
-                    x_pos = x_pos.to_pydatetime()
-                x_offset = x_pos + timedelta(seconds=30 * (i + 1))
-                # Y轴精确取末端点的y，不设任何垂直偏移
+            _t_min = df_trend['timestamp'].min()
+            _t_max = df_trend['timestamp'].max()
+            _span = _t_max - _t_min
+            if hasattr(_span, 'total_seconds') and _span.total_seconds() > 0:
+                _offset_delta = timedelta(seconds=_span.total_seconds() * 0.02)
+            else:
+                _offset_delta = timedelta(minutes=2)
+            # 适当扩展X轴范围，确保末端标签不被右侧裁剪
+            _pad = _span * 0.10 if (hasattr(_span, 'total_seconds') and _span.total_seconds() > 0) else timedelta(minutes=5)
+            try:
+                fig.update_xaxes(range=[_t_min, _t_max + _pad])
+            except Exception:
+                pass
+            # 按子图分组，组内按添加顺序分配少量垂直偏移，避免实测/预测标签重叠
+            _by_row = {}
+            for _idx, _p in enumerate(trace_data):
+                _by_row.setdefault(_p['row'], []).append(_idx)
+            _shifts = [0, 12, -12, 24, -24]
+            _yshift_map = {}
+            for _r, _idxs in _by_row.items():
+                for _pos, _i in enumerate(_idxs):
+                    _yshift_map[_i] = _shifts[_pos] if _pos < len(_shifts) else 0
+            for _i, _p in enumerate(trace_data):
+                _xref = 'x' if _p['row'] == 1 else f'x{_p["row"]}'
+                _yref = 'y' if _p['row'] == 1 else f'y{_p["row"]}'
+                _x_pos = _p['x']
+                if hasattr(_x_pos, 'to_pydatetime'):
+                    _x_pos = _x_pos.to_pydatetime()
                 fig.add_annotation(
-                    x=x_offset,
-                    y=p['y'],
-                    text=p['name'],
+                    x=_x_pos + _offset_delta,
+                    y=_p['y'],
+                    xref=_xref,
+                    yref=_yref,
+                    text=_p['name'],
                     showarrow=False,
-                    yshift=0,                  # 关键：垂直偏移为0，精确对齐Y轴
-                    font=dict(size=9, color=p['color']),
+                    yshift=_yshift_map.get(_i, 0),
+                    font=dict(size=9, color=_p['color']),
                     xanchor='left'
                 )
 
