@@ -1336,14 +1336,13 @@ if input_data is not None:
                 """, unsafe_allow_html=True)
 
     # ================================================================
-    # 2. 趋势图（近24小时）—— 已扩展至5个指标，修复标签错位
+    # 2. 趋势图（近24小时）—— 精准标签定位，每条曲线对应唯一文字
     # ================================================================
     st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
-    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分")
+    st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 各指标颜色区分，标签位于曲线末端右侧")
 
     recent_data = st.session_state.data_buffer.get_recent(24)
     if len(recent_data) > 1:
-        # ----- 构建包含全部5个指标的数据框 -----
         df_trend = pd.DataFrame([{
             'timestamp': d['timestamp'],
             'inlet_COD': d['inlet']['COD'],
@@ -1363,12 +1362,10 @@ if input_data is not None:
             'outlet_SS_pred': d['pred_outlet']['SS'] if d['pred_outlet'] else None,
         } for d in recent_data])
 
-        # 定义5个子图标题
         subplot_titles = ('COD', 'NH₃-N', 'TP', 'TN', 'SS')
         fig = make_subplots(rows=5, cols=1, shared_xaxes=True, vertical_spacing=0.06,
                             subplot_titles=subplot_titles)
 
-        # 定义每个指标的配置 (列名前缀, 进水颜色, 实测颜色, 预测颜色, 限值)
         indicators_config = [
             ('COD', '#E74C3C', '#2E86AB', '#2E86AB', DESIGN_LIMITS['COD']['value']),
             ('NH3', '#F39C12', '#27AE60', '#27AE60', DESIGN_LIMITS['NH3-N']['value']),
@@ -1377,14 +1374,13 @@ if input_data is not None:
             ('SS', '#9467BD', '#D62728', '#D62728', DESIGN_LIMITS['SS']['value'])
         ]
 
+        # 添加所有曲线
         for row, (prefix, in_color, real_color, pred_color, limit) in enumerate(indicators_config, start=1):
-            # 进水
             fig.add_trace(
                 go.Scatter(x=df_trend['timestamp'], y=df_trend[f'inlet_{prefix}'],
                            name=f'进水 {prefix}', line=dict(color=in_color, width=2)),
                 row=row, col=1
             )
-            # 实测出水（如果有）
             mask_real = df_trend[f'outlet_{prefix}_real'].notna()
             if mask_real.any():
                 fig.add_trace(
@@ -1392,7 +1388,6 @@ if input_data is not None:
                                name=f'出水 {prefix} 实测', line=dict(color=real_color, width=2.5)),
                     row=row, col=1
                 )
-            # 预测出水
             mask_pred = df_trend[f'outlet_{prefix}_pred'].notna()
             if mask_pred.any():
                 fig.add_trace(
@@ -1400,41 +1395,65 @@ if input_data is not None:
                                name=f'出水 {prefix} 预测', line=dict(color=pred_color, width=2, dash='dot')),
                     row=row, col=1
                 )
-            # 限值线
             fig.add_hline(y=limit, line_dash="dash", line_color="red", row=row, col=1)
 
-        # ----- 为每条曲线添加末端标签（修正：x轴偏移2分钟，y轴动态偏移） -----
-        # 按索引遍历所有trace，为每个trace的最后一个非空点添加注释
-        # 为了错开，每个trace的x偏移为 (idx+1)*2 分钟
-        for idx, trace in enumerate(fig.data):
-            # 获取非空的x,y值
+        # ----- 为每条曲线添加末端标签，按子图分组，精准对应 -----
+        # 第一步：提取每个trace的row和最后一个有效点
+        prefix_to_row = {'COD':1, 'NH3':2, 'TP':3, 'TN':4, 'SS':5}
+        grouped_points = {}  # {row: [{'trace': trace, 'x': x, 'y': y, 'name': name}]}
+
+        for trace in fig.data:
+            # 从trace.name中提取指标前缀
+            name = trace.name
+            # 例如 "进水 COD" -> "COD", "出水 COD 实测" -> "COD"
+            parts = name.split()
+            # 取第二个词（如果以"进水"开头）或第二个词（如果以"出水"开头）
+            if parts[0] == '进水':
+                key = parts[1]
+            elif parts[0] == '出水':
+                key = parts[1]
+            else:
+                continue
+            row = prefix_to_row.get(key)
+            if row is None:
+                continue
+            # 获取最后一个有效点
             x_vals = trace.x
             y_vals = trace.y
-            # 找到最后一个非空点（排除None）
             valid_indices = [i for i, (x, y) in enumerate(zip(x_vals, y_vals)) if x is not None and y is not None]
             if not valid_indices:
                 continue
             last_idx = valid_indices[-1]
             x_last = x_vals[last_idx]
             y_last = y_vals[last_idx]
-            # 偏移量：每个trace偏移 (idx+1)*2 分钟，避免重叠
-            offset_minutes = (idx + 1) * 2
-            x_offset = x_last + timedelta(minutes=offset_minutes)
-            # 根据trace name判断上下偏移
-            if '进水' in trace.name:
-                yshift = 20 if (idx % 2 == 0) else -20
-            else:
-                yshift = 12 if (idx % 2 == 0) else -12
+            grouped_points.setdefault(row, []).append({
+                'trace': trace,
+                'x': x_last,
+                'y': y_last,
+                'name': name
+            })
 
-            fig.add_annotation(
-                x=x_offset,
-                y=y_last,
-                text=trace.name,
-                showarrow=False,
-                yshift=yshift,
-                font=dict(size=9, color=trace.line.color),
-                xanchor='left'
-            )
+        # 为每一行添加注释，按y值排序，均匀分布yshift
+        for row, points in grouped_points.items():
+            # 按y值排序
+            points.sort(key=lambda p: p['y'])
+            n = len(points)
+            if n == 0:
+                continue
+            # 分配yshift，从 -(n-1)*10 到 (n-1)*10，步长20
+            for i, p in enumerate(points):
+                yshift = - (n-1) * 10 + i * 20
+                # x偏移5秒
+                x_offset = p['x'] + timedelta(seconds=5)
+                fig.add_annotation(
+                    x=x_offset,
+                    y=p['y'],
+                    text=p['name'],
+                    showarrow=False,
+                    yshift=yshift,
+                    font=dict(size=9, color=p['trace'].line.color),
+                    xanchor='left'
+                )
 
         fig.update_layout(height=650, showlegend=True, hovermode='x unified')
         fig.update_xaxes(title_text="时间（北京时间）", row=5, col=1)
