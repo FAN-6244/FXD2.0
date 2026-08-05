@@ -1034,7 +1034,10 @@ input_mode_global = st.sidebar.radio(
     index=0
 )
 
-REQUIRED_COLS = ['COD', 'NH3-N', 'TP', 'TN', 'SS', '流量', 'PAC', '碳源', 'MLSS', 'DO']
+# 核心预测必需的列（用于文件上传解析）
+CORE_REQUIRED_COLS = ['COD', 'NH3-N', 'TP', 'TN', 'SS', '流量', 'MLSS']
+# 模板表头（包含序号、时间）
+TEMPLATE_COLS = ['序号', '时间', 'COD', 'NH3-N', 'TP', 'TN', 'SS', '流量', 'MLSS']
 
 # --- 初始化变量 ---
 cod_in = nh3_in = tp_in = tn_in = ss_in = flow_in = 0
@@ -1068,15 +1071,17 @@ if input_mode_global == "✏️ 手动输入":
     }
     st.sidebar.info("💡 手动模式：修改参数后自动更新预测")
 
-# --- 2. 文件上传 ---
+# --- 2. 文件上传（模板已更新） ---
 elif input_mode_global == "📁 文件上传":
     st.sidebar.markdown("### 📁 上传数据文件")
     st.sidebar.caption("请上传包含以下列的 Excel/CSV 文件：")
-    st.sidebar.code("COD, NH3-N, TP, TN, SS, 流量, PAC, 碳源, MLSS, DO", language='text')
+    # 更新提示列
+    st.sidebar.code("序号, 时间, COD, NH3-N, TP, TN, SS, 流量, MLSS", language='text')
 
     if st.sidebar.button("📥 下载空模板 (Excel)"):
-        template_df = pd.DataFrame(columns=REQUIRED_COLS)
-        template_df.loc[0] = [200, 20, 3.0, 30, 150, 10000, 30, 50, 4000, 2.0]
+        # 使用新表头生成模板
+        template_df = pd.DataFrame(columns=TEMPLATE_COLS)
+        template_df.loc[0] = [1, "2026-08-01 00:00", 200, 20, 3.0, 30, 150, 10000, 4000]
         from io import BytesIO
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -1095,15 +1100,41 @@ elif input_mode_global == "📁 文件上传":
                 df_upload = pd.read_csv(uploaded_file)
             else:
                 df_upload = pd.read_excel(uploaded_file)
-            missing_cols = set(REQUIRED_COLS) - set(df_upload.columns)
+            
+            # 检查核心列是否存在
+            missing_cols = set(CORE_REQUIRED_COLS) - set(df_upload.columns)
             if missing_cols:
                 st.sidebar.error(f"❌ 缺少必需列：{missing_cols}")
                 input_data = None
             else:
                 row = df_upload.iloc[0]
-                cod_in = row['COD']; nh3_in = row['NH3-N']; tp_in = row['TP']
-                tn_in = row['TN']; ss_in = row['SS']; flow_in = row['流量']
-                pac = row['PAC']; carbon = row['碳源']; mlss = row['MLSS']; do = row['DO']
+                cod_in = row['COD']
+                nh3_in = row['NH3-N']
+                tp_in = row['TP']
+                tn_in = row.get('TN', 30)  # 兼容旧版
+                ss_in = row['SS']
+                flow_in = row['流量']
+                mlss = row['MLSS']
+                
+                # 可选运行参数：若文件中无此列则使用默认值
+                if 'PAC' in df_upload.columns:
+                    pac = row['PAC']
+                else:
+                    pac = 30.0
+                    st.sidebar.info("ℹ️ 未检测到'PAC'列，使用默认值 30 mg/L")
+                
+                if '碳源' in df_upload.columns:
+                    carbon = row['碳源']
+                else:
+                    carbon = 50.0
+                    st.sidebar.info("ℹ️ 未检测到'碳源'列，使用默认值 50 mg/L")
+                
+                if 'DO' in df_upload.columns:
+                    do = row['DO']
+                else:
+                    do = 2.0
+                    st.sidebar.info("ℹ️ 未检测到'DO'列，使用默认值 2.0 mg/L")
+                
                 input_data = {
                     'COD': cod_in, 'NH3-N': nh3_in, 'TP': tp_in, 'TN': tn_in, 'SS': ss_in,
                     '流量': flow_in, 'PAC': pac, '碳源': carbon, 'MLSS': mlss, 'DO': do
@@ -1203,7 +1234,7 @@ if input_data is not None:
             else:
                 real_removal[ind] = 0
 
-        # ⭐ 实时驯化：每次预测后立即微调所有指标（取消5次限制）
+        # ⭐ 实时驯化：每次预测后立即微调所有指标
         for ind in ['COD', 'NH3-N', 'TP', 'TN', 'SS']:
             calibrate_model(ind, input_data, real_removal[ind])
         # 保存到Supabase（可选）
@@ -1306,10 +1337,10 @@ if input_data is not None:
                 </div>
                 """, unsafe_allow_html=True)
 
-    # ⭐ 已删除：运行参数指标卡（PAC、碳源、MLSS、DO、平均去除率）
+    # 已删除：运行参数指标卡（PAC、碳源、MLSS、DO、平均去除率）
 
     # ================================================================
-    # 2. 趋势图（近24小时）
+    # 2. 趋势图（近24小时）—— 每条线旁已添加指标名称标签
     # ================================================================
     st.markdown('<div class="section-header">📈 进出水趋势（近24小时）</div>', unsafe_allow_html=True)
     st.caption("🟦 实线 = 实测/进水 | 虚线 = 预测 | 🟥进水COD 🟧进水NH₃-N 🟪进水TP")
@@ -1334,42 +1365,55 @@ if input_data is not None:
 
         # COD
         fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_COD'],
-                                name='进水COD', line=dict(color='#E74C3C', width=2)), row=1, col=1)
+                                name='进水 COD', line=dict(color='#E74C3C', width=2)), row=1, col=1)
         mask_real = df_trend['outlet_COD_real'].notna()
         if mask_real.any():
             fig.add_trace(go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real]['outlet_COD_real'],
-                                    name='出水COD_实测', line=dict(color='#2E86AB', width=2.5)), row=1, col=1)
+                                    name='出水 COD 实测', line=dict(color='#2E86AB', width=2.5)), row=1, col=1)
         mask_pred = df_trend['outlet_COD_pred'].notna()
         if mask_pred.any():
             fig.add_trace(go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred]['outlet_COD_pred'],
-                                    name='出水COD_预测', line=dict(color='#2E86AB', width=2, dash='dot')), row=1, col=1)
+                                    name='出水 COD 预测', line=dict(color='#2E86AB', width=2, dash='dot')), row=1, col=1)
         fig.add_hline(y=DESIGN_LIMITS['COD']['value'], line_dash="dash", line_color="red", row=1, col=1)
 
         # NH3-N
         fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_NH3'],
-                                name='进水NH₃-N', line=dict(color='#F39C12', width=2)), row=2, col=1)
+                                name='进水 NH₃-N', line=dict(color='#F39C12', width=2)), row=2, col=1)
         mask_real = df_trend['outlet_NH3_real'].notna()
         if mask_real.any():
             fig.add_trace(go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real]['outlet_NH3_real'],
-                                    name='出水NH₃-N_实测', line=dict(color='#27AE60', width=2.5)), row=2, col=1)
+                                    name='出水 NH₃-N 实测', line=dict(color='#27AE60', width=2.5)), row=2, col=1)
         mask_pred = df_trend['outlet_NH3_pred'].notna()
         if mask_pred.any():
             fig.add_trace(go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred]['outlet_NH3_pred'],
-                                    name='出水NH₃-N_预测', line=dict(color='#27AE60', width=2, dash='dot')), row=2, col=1)
+                                    name='出水 NH₃-N 预测', line=dict(color='#27AE60', width=2, dash='dot')), row=2, col=1)
         fig.add_hline(y=DESIGN_LIMITS['NH3-N']['value'], line_dash="dash", line_color="red", row=2, col=1)
 
         # TP
         fig.add_trace(go.Scatter(x=df_trend['timestamp'], y=df_trend['inlet_TP'],
-                                name='进水TP', line=dict(color='#8E44AD', width=2)), row=3, col=1)
+                                name='进水 TP', line=dict(color='#8E44AD', width=2)), row=3, col=1)
         mask_real = df_trend['outlet_TP_real'].notna()
         if mask_real.any():
             fig.add_trace(go.Scatter(x=df_trend[mask_real]['timestamp'], y=df_trend[mask_real]['outlet_TP_real'],
-                                    name='出水TP_实测', line=dict(color='#F39C12', width=2.5)), row=3, col=1)
+                                    name='出水 TP 实测', line=dict(color='#F39C12', width=2.5)), row=3, col=1)
         mask_pred = df_trend['outlet_TP_pred'].notna()
         if mask_pred.any():
             fig.add_trace(go.Scatter(x=df_trend[mask_pred]['timestamp'], y=df_trend[mask_pred]['outlet_TP_pred'],
-                                    name='出水TP_预测', line=dict(color='#F39C12', width=2, dash='dot')), row=3, col=1)
+                                    name='出水 TP 预测', line=dict(color='#F39C12', width=2, dash='dot')), row=3, col=1)
         fig.add_hline(y=DESIGN_LIMITS['TP']['value'], line_dash="dash", line_color="red", row=3, col=1)
+
+        # ⭐ 新增：为每条线添加末端文本标签（满足“每条线旁边写好对应的指标”）
+        for trace in fig.data:
+            if len(trace.x) > 0:
+                fig.add_annotation(
+                    x=trace.x[-1],
+                    y=trace.y[-1],
+                    text=trace.name,
+                    showarrow=False,
+                    yshift=8,
+                    font=dict(size=10, color=trace.line.color),
+                    xanchor='left'
+                )
 
         fig.update_layout(height=450, showlegend=True, hovermode='x unified')
         fig.update_xaxes(title_text="时间（北京时间）", row=3, col=1)
@@ -1378,7 +1422,7 @@ if input_data is not None:
         st.info("📭 数据收集中... 请等待更多数据点（至少2个时间点）")
 
     # ================================================================
-    # 3. ⭐ 记忆长度与分频调控（按论文结论：NH3-N=1h, TP=1h, TN=9h, COD/SS=N/A）
+    # 3. 记忆长度与分频调控
     # ================================================================
     st.markdown('<div class="section-header">🧠 系统记忆长度（SML）与分频调控策略</div>', unsafe_allow_html=True)
     st.caption("💡 基于去除率模型 XGBoost-SHAP 分析（论文结论 v7.0）：NH₃-N=1h · TP=1h · TN=9h · COD/SS=不适用")
@@ -1413,7 +1457,7 @@ if input_data is not None:
         """, unsafe_allow_html=True)
 
     # ================================================================
-    # 4. 时序决策建议（处理 N/A 情况）
+    # 4. 时序决策建议
     # ================================================================
     st.markdown('<div class="section-header">⏱️ 时序决策建议（具体操作）</div>', unsafe_allow_html=True)
     indicator_select = st.selectbox("选择指标", ['COD', 'NH3-N', 'TP', 'TN', 'SS'])
@@ -1421,9 +1465,7 @@ if input_data is not None:
     current_val = outlet_display.get(indicator_select, 0)
     limit = DESIGN_LIMITS[indicator_select]['value']
 
-    # 判断是否有记忆效应
     if mem is not None and mem > 0:
-        # 有记忆效应：生成时序步骤
         if indicator_select == 'COD':
             steps = [
                 (0, "🚨 记录进水COD异常值，启动应急响应"),
@@ -1456,7 +1498,7 @@ if input_data is not None:
                 (9, "📊 评估出水TN变化趋势（9h达到峰值响应）"),
                 (12, "✅ 确认TN稳定达标，逐步回调碳源")
             ]
-        else:  # SS（理论上SS为N/A，但以防万一）
+        else:
             steps = [
                 (0, "🚨 SS超标，启动应急响应"),
                 (5, "📞 检查二沉池刮泥机"),
@@ -1478,7 +1520,6 @@ if input_data is not None:
             """, unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
     else:
-        # ⭐ 无记忆效应（COD / SS）：切换为实时阈值报警建议
         st.info(f"⚠️ **{indicator_select} 无显著记忆效应**（R²偏低，去除率几乎恒定/物理沉淀主导）")
         st.markdown(f"""
         <div style="background:#FFF3E0;border-radius:8px;padding:12px 16px;border-left:4px solid #F39C12;">
@@ -1492,7 +1533,7 @@ if input_data is not None:
         """, unsafe_allow_html=True)
 
     # ================================================================
-    # 5. 异常诊断与工艺优化（已细化）
+    # 5. 异常诊断与工艺优化
     # ================================================================
     st.markdown('<div class="section-header">🔍 异常诊断与工艺优化建议</div>', unsafe_allow_html=True)
     st.caption("💡 基于同类型A²/O工艺经验库 + 当前工况多维度分析（细化版）")
@@ -1537,7 +1578,6 @@ if input_data is not None:
         </div>
         """, unsafe_allow_html=True)
     with col_stats3:
-        # ⭐ 更新为论文结论
         st.markdown("""
         <div class="stat-card">
             <div class="stat-label">🧠 系统记忆长度（SML）</div>
